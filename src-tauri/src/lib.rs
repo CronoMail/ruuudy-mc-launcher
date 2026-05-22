@@ -9,6 +9,7 @@ use std::{
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+use sysinfo::System;
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use zip::ZipArchive;
@@ -1803,7 +1804,8 @@ fn upsert_official_launcher_profile(
         "created": now,
         "lastUsed": now,
         "gameDir": profile_dir.to_string_lossy(),
-        "lastVersionId": fabric_version_id(&manifest.loader.version, &manifest.minecraft_version)
+        "lastVersionId": fabric_version_id(&manifest.loader.version, &manifest.minecraft_version),
+        "javaArgs": default_client_java_args()
     });
 
     if !root
@@ -1819,6 +1821,28 @@ fn upsert_official_launcher_profile(
     }
     fs::write(launcher_profiles, serde_json::to_string_pretty(&root)?)?;
     Ok(())
+}
+
+fn default_client_java_args() -> String {
+    let mut system = System::new();
+    system.refresh_memory();
+
+    let total_gib = system.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
+    let xmx_gib = if total_gib >= 32.0 {
+        12
+    } else if total_gib >= 24.0 {
+        10
+    } else if total_gib >= 16.0 {
+        8
+    } else if total_gib >= 12.0 {
+        6
+    } else if total_gib >= 8.0 {
+        4
+    } else {
+        3
+    };
+
+    format!("-Xmx{xmx_gib}G -XX:+UseG1GC")
 }
 
 fn remove_official_launcher_profile(manifest: &PackManifest) -> LauncherResult<()> {
