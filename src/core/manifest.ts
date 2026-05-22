@@ -17,6 +17,7 @@ export type PackManifest = {
   };
   files: ManifestFile[];
   overrides: ManifestOverride[];
+  defaultOptions?: ManifestOverride;
 };
 
 export type ModrinthManifestFile = {
@@ -93,9 +94,15 @@ export function buildInstallPlan(
 
   const downloads = [
     ...manifest.files.map(fileToDownload),
-    ...manifest.overrides.map(overrideToDownload)
+    ...manifest.overrides.map(overrideToDownload),
+    ...(localState === null && manifest.defaultOptions
+      ? [overrideToDownload(manifest.defaultOptions)]
+      : [])
   ];
-  const nextManagedFiles = downloads.map((item) => item.relativePath);
+  const nextManagedFiles = [
+    ...manifest.files.map(fileToDownload),
+    ...manifest.overrides.map(overrideToDownload)
+  ].map((item) => item.relativePath);
   const nextManagedSet = new Set(nextManagedFiles);
   const removals = (localState?.managedFiles ?? []).filter(
     (relativePath) => !nextManagedSet.has(relativePath)
@@ -126,6 +133,16 @@ function validateManifest(manifest: PackManifest): void {
   for (const override of manifest.overrides) {
     if (!/^[a-f0-9]{64}$/i.test(override.sha256)) {
       throw new Error(`Override ${override.path} must include a SHA-256 hash.`);
+    }
+  }
+
+  if (manifest.defaultOptions) {
+    if (manifest.defaultOptions.path.replaceAll("\\", "/") !== "options.txt") {
+      throw new Error("Default options must target options.txt.");
+    }
+
+    if (!/^[a-f0-9]{64}$/i.test(manifest.defaultOptions.sha256)) {
+      throw new Error("Default options must include a SHA-256 hash.");
     }
   }
 }

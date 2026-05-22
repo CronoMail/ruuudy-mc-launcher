@@ -123,6 +123,42 @@ describe("buildInstallPlan", () => {
       buildInstallPlan(unsafeManifest, null, { existingFiles: [] })
     ).toThrow(/external.*sha-256/i);
   });
+
+  it("applies default options only on first install", () => {
+    const manifestWithDefaults: PackManifest = {
+      ...manifest,
+      defaultOptions: {
+        path: "options.txt",
+        url: "https://launcher.ruuudy.in/files/defaults/options.txt",
+        sha256: "c".repeat(64),
+        size: 40
+      }
+    };
+
+    const firstInstall = buildInstallPlan(manifestWithDefaults, null, {
+      existingFiles: []
+    });
+    const resync = buildInstallPlan(
+      manifestWithDefaults,
+      {
+        packId: "fakersbob",
+        manifestVersion: "2026.05.22-1",
+        managedFiles: [
+          "mods/fabric-api.jar",
+          "mods/manual-mod.jar",
+          "config/example.toml"
+        ]
+      },
+      {
+        existingFiles: ["options.txt"]
+      }
+    );
+
+    expect(firstInstall.downloads.map((item) => item.relativePath)).toContain("options.txt");
+    expect(firstInstall.nextManagedFiles).not.toContain("options.txt");
+    expect(resync.downloads.map((item) => item.relativePath)).not.toContain("options.txt");
+    expect(resync.removals).toEqual([]);
+  });
 });
 
 describe("createOrUpdateLauncherProfile", () => {

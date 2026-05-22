@@ -373,6 +373,60 @@ export function App() {
     }
   }
 
+  async function uploadDefaultKeybinds() {
+    if (!manifest) {
+      setError("Load or import a profile before uploading default keybinds.");
+      return;
+    }
+    if (!adminToken.trim()) {
+      setError("Admin token is required to upload default keybinds.");
+      return;
+    }
+
+    setError(null);
+    setModNotice(null);
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Minecraft options.txt", extensions: ["txt"] }]
+    });
+    if (typeof selected !== "string") return;
+
+    try {
+      const result = await invoke<PublishSummary>("upload_default_options", {
+        apiBase,
+        adminToken,
+        code,
+        manifest,
+        optionsPath: selected
+      });
+      setPublishSummary(result);
+      await loadManifest(code.trim().toUpperCase(), result.manifest);
+      await refreshProfiles();
+      setModNotice("Default keybinds uploaded. New installs will get them automatically.");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function resetDefaultKeybinds() {
+    if (!manifest) return;
+    if (!manifest.defaultOptions) {
+      setError("This pack has no uploaded default keybinds yet.");
+      return;
+    }
+    if (!window.confirm("Replace this profile's options.txt with the pack default keybinds?")) {
+      return;
+    }
+
+    setError(null);
+    try {
+      await invoke("reset_default_options", { manifest });
+      setModNotice("Default keybinds were applied to this profile.");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function deleteCurrentProfile() {
     if (!manifest) return;
     const label = `${manifest.packName} (${code})`;
@@ -570,6 +624,14 @@ export function App() {
                 placeholder="Needed only to publish"
               />
             </label>
+            <button
+              className="secondary-button"
+              onClick={() => void uploadDefaultKeybinds()}
+              disabled={!manifest || !adminToken.trim()}
+            >
+              <Upload size={16} />
+              Upload Default Keybinds
+            </button>
             <p>Uses the hosted Ruuudy pack API automatically.</p>
           </div>
         )}
@@ -691,6 +753,12 @@ export function App() {
                     <Gamepad2 size={18} />
                     Open Minecraft Launcher
                   </button>
+                  {manifest.defaultOptions && (
+                    <button className="secondary-button" onClick={() => void resetDefaultKeybinds()}>
+                      <RefreshCcw size={18} />
+                      Reset Keybinds
+                    </button>
+                  )}
                   <button className="danger-button" onClick={deleteCurrentProfile}>
                     <Trash2 size={18} />
                     Delete Profile

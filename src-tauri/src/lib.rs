@@ -51,6 +51,8 @@ struct PackManifest {
     server: Server,
     files: Vec<ManifestFile>,
     overrides: Vec<ManifestOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_options: Option<ManifestOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,6 +549,7 @@ fn import_curseforge_zip_blocking(
         },
         files: locked_files,
         overrides: override_files,
+        default_options: None,
     };
 
     emit_progress(
@@ -702,6 +705,104 @@ fn publish_profile(
         uploaded_files,
         manifest: publish_manifest,
     })
+}
+
+#[tauri::command]
+fn upload_default_options(
+    api_base: String,
+    admin_token: String,
+    code: String,
+    manifest: PackManifest,
+    options_path: String,
+) -> LauncherResult<PublishSummary> {
+    validate_manifest(&manifest)?;
+    let code = normalize_pack_code(&code)?;
+    let api_base = normalize_api_base(&api_base)?;
+    if admin_token.trim().is_empty() {
+        return Err(LauncherError::Message(
+            "Admin token is required to upload default keybinds.".to_string(),
+        ));
+    }
+
+    let source_path = PathBuf::from(options_path);
+    if !source_path.exists() || !source_path.is_file() {
+        return Err(LauncherError::Message(
+            "Selected options.txt file does not exist.".to_string(),
+        ));
+    }
+    let filename = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if filename != "options.txt" {
+        return Err(LauncherError::Message(
+            "Select the Minecraft options.txt file for default keybinds.".to_string(),
+        ));
+    }
+
+    let profile_dir = profile_dir(&manifest)?;
+    fs::create_dir_all(&profile_dir)?;
+    let local_options_path = profile_dir.join("options.txt");
+    fs::copy(&source_path, &local_options_path)?;
+
+    let client = Client::builder()
+        .user_agent("RuuudyMCLauncher/0.1")
+        .build()?;
+    let (url, sha256, size) = upload_profile_file(
+        &client,
+        &api_base,
+        admin_token.trim(),
+        &code,
+        &profile_dir,
+        "options.txt",
+    )?;
+
+    let mut publish_manifest = manifest;
+    publish_manifest.default_options = Some(ManifestOverride {
+        path: "options.txt".to_string(),
+        url,
+        sha256,
+        size,
+    });
+    publish_manifest.version = format!("manual-{}", unix_timestamp());
+    validate_manifest(&publish_manifest)?;
+
+    client
+        .put(format!("{api_base}/api/admin/packs/{code}"))
+        .bearer_auth(admin_token.trim())
+        .json(&publish_manifest)
+        .send()?
+        .error_for_status()?;
+    save_local_manifest(&code, &publish_manifest)?;
+    upsert_registry_profile(RegistryProfile {
+        code: code.clone(),
+        pack_id: publish_manifest.pack_id.clone(),
+        pack_name: publish_manifest.pack_name.clone(),
+        manifest_path: manifest_path_for_code(&code)?.to_string_lossy().to_string(),
+    })?;
+
+    Ok(PublishSummary {
+        code: code.clone(),
+        manifest_url: format!("{api_base}/api/packs/{code}"),
+        uploaded_files: 1,
+        manifest: publish_manifest,
+    })
+}
+
+#[tauri::command]
+fn reset_default_options(manifest: PackManifest) -> LauncherResult<()> {
+    validate_manifest(&manifest)?;
+    let default_options = manifest.default_options.as_ref().ok_or_else(|| {
+        LauncherError::Message("This pack has no default keybinds uploaded.".to_string())
+    })?;
+    let profile_dir = profile_dir(&manifest)?;
+    fs::create_dir_all(&profile_dir)?;
+    let client = Client::builder()
+        .user_agent("RuuudyMCLauncher/0.1")
+        .build()?;
+    let item = override_to_download(default_options);
+    let resolved = resolve_download(&client, &item)?;
+    download_and_verify(&client, &profile_dir, &resolved)
 }
 
 #[tauri::command]
@@ -898,6 +999,8 @@ pub fn run() {
             save_profile_manifest,
             sync_manifest_with_profile_folder,
             publish_profile,
+            upload_default_options,
+            reset_default_options,
             search_modrinth_mods,
             add_modrinth_mod_to_profile,
             import_local_jar_to_profile,
@@ -988,6 +1091,20 @@ fn validate_manifest(manifest: &PackManifest) -> LauncherResult<()> {
         }
     }
 
+    if let Some(default_options) = &manifest.default_options {
+        if default_options.path.replace('\\', "/") != "options.txt" {
+            return Err(LauncherError::Message(
+                "Default options must target options.txt.".to_string(),
+            ));
+        }
+
+        if !is_hex_hash(&default_options.sha256, 64) {
+            return Err(LauncherError::Message(
+                "Default options must include a SHA-256 hash.".to_string(),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -996,16 +1113,24 @@ fn is_hex_hash(value: &str, expected_len: usize) -> bool {
 }
 
 fn build_install_plan(manifest: &PackManifest, state: Option<&LocalInstallState>) -> InstallPlan {
-    let downloads: Vec<DownloadItem> = manifest
+    let mut downloads: Vec<DownloadItem> = manifest
         .files
         .iter()
         .map(file_to_download)
         .chain(manifest.overrides.iter().map(override_to_download))
         .collect();
+
     let next_managed_files: Vec<String> = downloads
         .iter()
         .map(|item| item.relative_path.clone())
         .collect();
+
+    if state.is_none() {
+        if let Some(default_options) = &manifest.default_options {
+            downloads.push(override_to_download(default_options));
+        }
+    }
+
     let next_set: BTreeSet<String> = next_managed_files.iter().cloned().collect();
     let removals = state
         .map(|state| {
@@ -1266,6 +1391,29 @@ fn upload_unrepresented_managed_files(
     publish_manifest
         .overrides
         .retain(|override_file| is_override_mod_jar(&override_file.path));
+
+    if publish_manifest
+        .default_options
+        .as_ref()
+        .is_some_and(|options| options.url.starts_with(LOCAL_PENDING_URL_PREFIX))
+    {
+        let (url, sha256, size) = upload_profile_file(
+            client,
+            api_base,
+            admin_token,
+            code,
+            &profile_dir,
+            "options.txt",
+        )?;
+        publish_manifest.default_options = Some(ManifestOverride {
+            path: "options.txt".to_string(),
+            url,
+            sha256,
+            size,
+        });
+        uploaded_files += 1;
+    }
+
     for override_file in publish_manifest.overrides.iter_mut() {
         if !override_file.url.starts_with(LOCAL_PENDING_URL_PREFIX) {
             continue;
@@ -2042,5 +2190,49 @@ mod tests {
                 panic!("CurseForge imports should lock as external files")
             }
         }
+    }
+
+    #[test]
+    fn install_plan_applies_default_options_only_on_first_install() {
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-1".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: Some(ManifestOverride {
+                path: "options.txt".to_string(),
+                url: "https://launcher.ruuudy.in/api/packs/JUNFEET/files/defaults/options.txt"
+                    .to_string(),
+                sha256: "a".repeat(64),
+                size: 42,
+            }),
+        };
+
+        let first_install = build_install_plan(&manifest, None);
+        let resync = build_install_plan(
+            &manifest,
+            Some(&LocalInstallState {
+                pack_id: "fakersbob".to_string(),
+                manifest_version: "manual-1".to_string(),
+                managed_files: Vec::new(),
+            }),
+        );
+
+        assert_eq!(first_install.downloads.len(), 1);
+        assert_eq!(first_install.downloads[0].relative_path, "options.txt");
+        assert!(first_install.next_managed_files.is_empty());
+        assert!(resync.downloads.is_empty());
+        assert!(resync.next_managed_files.is_empty());
     }
 }
