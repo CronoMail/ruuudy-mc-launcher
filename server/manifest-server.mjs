@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8787);
 const ADMIN_TOKEN = readSecret("PACK_ADMIN_TOKEN", "PACK_ADMIN_TOKEN_FILE");
 const DATA_DIR = process.env.PACK_DATA_DIR ?? join(__dirname, "data");
+const MAX_UPLOAD_BYTES = Number(process.env.PACK_MAX_UPLOAD_BYTES ?? 512 * 1024 * 1024);
 const CODE_PATTERN = /^[A-Z0-9_-]{2,32}$/;
 
 const server = createServer(async (request, response) => {
@@ -77,7 +78,7 @@ async function route(request, response) {
     requireAdmin(request);
     const code = normalizeCode(adminFileMatch[1]);
     const relativePath = decodeSafePath(adminFileMatch[2]);
-    const body = await readRawBody(request, 100 * 1024 * 1024);
+    const body = await readRawBody(request, MAX_UPLOAD_BYTES);
     const filePath = packFilePath(code, relativePath);
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, body);
