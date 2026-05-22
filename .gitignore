@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+.env
+.env.*
+*.key
+*.key.pub
+*.sig
+.DS_Store
+Thumbs.db

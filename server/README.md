@@ -1,0 +1,49 @@
+# Ruuudy Pack API
+
+This is the hosted manifest service for the launcher.
+
+Friends enter a pack code in the desktop app. The app calls:
+
+```text
+GET /api/packs/FAKERSBOB
+```
+
+When you update a profile, the launcher/admin side publishes the locked manifest to:
+
+```text
+PUT /api/admin/packs/FAKERSBOB
+Authorization: Bearer <PACK_ADMIN_TOKEN>
+```
+
+## Run On Oracle
+
+```bash
+cd /opt/ruuudy-mc-launcher
+npm install --omit=dev
+PACK_ADMIN_TOKEN='change-this-long-token' PORT=8787 npm run pack-server
+```
+
+For PM2:
+
+```bash
+pm2 start server/manifest-server.mjs --name ruuudy-pack-api --update-env
+pm2 save
+```
+
+Example Caddy reverse proxy:
+
+```caddyfile
+launcher.ruuudy.in {
+  reverse_proxy 127.0.0.1:8787
+}
+```
+
+## Data
+
+Pack manifests live in:
+
+```text
+server/data/packs/<CODE>/manifest.json
+```
+
+Back this folder up. It is the source of truth for profile codes.

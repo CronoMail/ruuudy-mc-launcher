@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "packId": "fakersbob",
+  "packName": "Fakersbob",
+  "version": "2026.05.22-1",
+  "minecraftVersion": "1.21.1",
+  "loader": {
+    "type": "fabric",
+    "version": "0.19.2"
+  },
+  "server": {
+    "address": "mc.ruuudy.in",
+    "port": 25565
+  },
+  "files": [
+    {
+      "type": "modrinth",
+      "side": "both",
+      "required": true,
+      "projectId": "P7dR8mSH",
+      "versionId": "Lwt6YYHL",
+      "filename": "fabric-api-0.116.12+1.21.1.jar",
+      "sha512": "e2da98d9885b2d1c2d15b77bfdafa5df6c294cc96844ded739c8fd61a358fc69c4c391e3296534ea67806cb8ec8d250c0343c0b237c567d9740c586e6d67333a",
+      "size": 2427037
+    }
+  ],
+  "overrides": []
+}

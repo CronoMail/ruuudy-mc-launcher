@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Ruuudy MC Launcher",
+  "version": "0.1.0",
+  "identifier": "in.ruuudy.mc-launcher",
+  "build": {
+    "beforeDevCommand": "npm.cmd run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm.cmd run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Ruuudy MC Launcher",
+        "width": 980,
+        "height": 680,
+        "minWidth": 820,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwMDU5QURGNTNBNkQ0RUMKUldUczFLWlQzNW9GWVB6ZUh0Rkxtd3JnNnE0TkgyeVVWYjNIZlVGdVAyb3FxTUYwb0lBSjlwbXkK",
+      "endpoints": [
+        "https://github.com/CronoMail/ruuudy-mc-launcher/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
