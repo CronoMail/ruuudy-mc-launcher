@@ -653,7 +653,18 @@ fn save_profile_manifest(code: String, manifest: PackManifest) -> LauncherResult
 }
 
 #[tauri::command]
-fn sync_manifest_with_profile_folder(
+async fn sync_manifest_with_profile_folder(
+    code: String,
+    manifest: PackManifest,
+) -> LauncherResult<FolderSyncSummary> {
+    tauri::async_runtime::spawn_blocking(move || {
+        sync_manifest_with_profile_folder_blocking(code, manifest)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Folder sync worker failed: {error}")))?
+}
+
+fn sync_manifest_with_profile_folder_blocking(
     code: String,
     manifest: PackManifest,
 ) -> LauncherResult<FolderSyncSummary> {
@@ -671,7 +682,20 @@ fn sync_manifest_with_profile_folder(
 }
 
 #[tauri::command]
-fn publish_profile(
+async fn publish_profile(
+    api_base: String,
+    admin_token: String,
+    code: String,
+    manifest: PackManifest,
+) -> LauncherResult<PublishSummary> {
+    tauri::async_runtime::spawn_blocking(move || {
+        publish_profile_blocking(api_base, admin_token, code, manifest)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Publish worker failed: {error}")))?
+}
+
+fn publish_profile_blocking(
     api_base: String,
     admin_token: String,
     code: String,
@@ -689,8 +713,13 @@ fn publish_profile(
     let client = Client::builder()
         .user_agent("RuuudyMCLauncher/0.1")
         .build()?;
-    let (publish_manifest, uploaded_files) =
-        upload_unrepresented_managed_files(&client, &api_base, admin_token.trim(), &code, manifest)?;
+    let (publish_manifest, uploaded_files) = upload_unrepresented_managed_files(
+        &client,
+        &api_base,
+        admin_token.trim(),
+        &code,
+        manifest,
+    )?;
     client
         .put(format!("{api_base}/api/admin/packs/{code}"))
         .bearer_auth(admin_token.trim())
@@ -708,7 +737,23 @@ fn publish_profile(
 }
 
 #[tauri::command]
-fn upload_default_options(
+async fn upload_default_options(
+    api_base: String,
+    admin_token: String,
+    code: String,
+    manifest: PackManifest,
+    options_path: String,
+) -> LauncherResult<PublishSummary> {
+    tauri::async_runtime::spawn_blocking(move || {
+        upload_default_options_blocking(api_base, admin_token, code, manifest, options_path)
+    })
+    .await
+    .map_err(|error| {
+        LauncherError::Message(format!("Default keybind upload worker failed: {error}"))
+    })?
+}
+
+fn upload_default_options_blocking(
     api_base: String,
     admin_token: String,
     code: String,
@@ -791,7 +836,15 @@ fn upload_default_options(
 }
 
 #[tauri::command]
-fn reset_default_options(manifest: PackManifest) -> LauncherResult<()> {
+async fn reset_default_options(manifest: PackManifest) -> LauncherResult<()> {
+    tauri::async_runtime::spawn_blocking(move || reset_default_options_blocking(manifest))
+        .await
+        .map_err(|error| {
+            LauncherError::Message(format!("Default keybind reset worker failed: {error}"))
+        })?
+}
+
+fn reset_default_options_blocking(manifest: PackManifest) -> LauncherResult<()> {
     validate_manifest(&manifest)?;
     let default_options = manifest.default_options.as_ref().ok_or_else(|| {
         LauncherError::Message("This pack has no default keybinds uploaded.".to_string())
@@ -807,7 +860,19 @@ fn reset_default_options(manifest: PackManifest) -> LauncherResult<()> {
 }
 
 #[tauri::command]
-fn search_modrinth_mods(
+async fn search_modrinth_mods(
+    query: String,
+    minecraft_version: String,
+    loader: String,
+) -> LauncherResult<Vec<ModrinthSearchResult>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        search_modrinth_mods_blocking(query, minecraft_version, loader)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Modrinth search worker failed: {error}")))?
+}
+
+fn search_modrinth_mods_blocking(
     query: String,
     minecraft_version: String,
     loader: String,
@@ -851,7 +916,19 @@ fn search_modrinth_mods(
 }
 
 #[tauri::command]
-fn add_modrinth_mod_to_profile(
+async fn add_modrinth_mod_to_profile(
+    code: String,
+    manifest: PackManifest,
+    project_id: String,
+) -> LauncherResult<PackManifest> {
+    tauri::async_runtime::spawn_blocking(move || {
+        add_modrinth_mod_to_profile_blocking(code, manifest, project_id)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Modrinth add worker failed: {error}")))?
+}
+
+fn add_modrinth_mod_to_profile_blocking(
     code: String,
     manifest: PackManifest,
     project_id: String,
@@ -880,16 +957,28 @@ fn add_modrinth_mod_to_profile(
 }
 
 #[tauri::command]
-fn import_local_jar_to_profile(
+async fn import_local_jar_to_profile(
     code: String,
     manifest: PackManifest,
     jar_path: String,
 ) -> LauncherResult<PackManifest> {
-    import_local_jars_to_profile(code, manifest, vec![jar_path])
+    import_local_jars_to_profile(code, manifest, vec![jar_path]).await
 }
 
 #[tauri::command]
-fn import_local_jars_to_profile(
+async fn import_local_jars_to_profile(
+    code: String,
+    manifest: PackManifest,
+    jar_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_local_jars_to_profile_blocking(code, manifest, jar_paths)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Local jar import worker failed: {error}")))?
+}
+
+fn import_local_jars_to_profile_blocking(
     code: String,
     manifest: PackManifest,
     jar_paths: Vec<String>,
@@ -1462,8 +1551,11 @@ fn upload_unrepresented_managed_files(
         uploaded_files += 1;
     }
 
-    let mut represented: BTreeSet<String> =
-        publish_manifest.files.iter().map(manifest_file_relative_path).collect();
+    let mut represented: BTreeSet<String> = publish_manifest
+        .files
+        .iter()
+        .map(manifest_file_relative_path)
+        .collect();
     represented.extend(
         publish_manifest
             .overrides
@@ -1480,7 +1572,10 @@ fn upload_unrepresented_managed_files(
             continue;
         }
 
-        if !profile_dir.join(safe_relative_path(&relative_path)?).is_file() {
+        if !profile_dir
+            .join(safe_relative_path(&relative_path)?)
+            .is_file()
+        {
             continue;
         }
 
@@ -2327,8 +2422,14 @@ mod tests {
             .map(|override_file| override_file.path.as_str())
             .collect::<Vec<_>>();
         assert_eq!(override_paths, vec!["mods/alpha.jar", "mods/beta.jar"]);
-        assert_eq!(fs::read(profile_dir.join("mods/alpha.jar")).unwrap(), b"alpha-new");
-        assert_eq!(fs::read(profile_dir.join("mods/beta.jar")).unwrap(), b"beta");
+        assert_eq!(
+            fs::read(profile_dir.join("mods/alpha.jar")).unwrap(),
+            b"alpha-new"
+        );
+        assert_eq!(
+            fs::read(profile_dir.join("mods/beta.jar")).unwrap(),
+            b"beta"
+        );
         assert!(next_manifest.version.starts_with("manual-"));
         let _ = fs::remove_dir_all(root);
     }
