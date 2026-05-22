@@ -740,21 +740,22 @@ fn upload_default_options(
         ));
     }
 
-    let profile_dir = profile_dir(&manifest)?;
-    fs::create_dir_all(&profile_dir)?;
-    let local_options_path = profile_dir.join("options.txt");
-    fs::copy(&source_path, &local_options_path)?;
+    let bytes = fs::read(&source_path).map_err(|err| {
+        LauncherError::Message(format!(
+            "Could not read selected options.txt. Close Minecraft/the launcher if it is still open, then try again. ({err})"
+        ))
+    })?;
 
     let client = Client::builder()
         .user_agent("RuuudyMCLauncher/0.1")
         .build()?;
-    let (url, sha256, size) = upload_profile_file(
+    let (url, sha256, size) = upload_pack_file_bytes(
         &client,
         &api_base,
         admin_token.trim(),
         &code,
-        &profile_dir,
         "options.txt",
+        bytes,
     )?;
 
     let mut publish_manifest = manifest;
@@ -1498,6 +1499,17 @@ fn upload_profile_file(
     let safe_path = safe_relative_path(relative_path)?;
     let source_path = profile_dir.join(safe_path);
     let bytes = fs::read(source_path)?;
+    upload_pack_file_bytes(client, api_base, admin_token, code, relative_path, bytes)
+}
+
+fn upload_pack_file_bytes(
+    client: &Client,
+    api_base: &str,
+    admin_token: &str,
+    code: &str,
+    relative_path: &str,
+    bytes: Vec<u8>,
+) -> LauncherResult<(String, String, u64)> {
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let size = bytes.len() as u64;
     let file_url_path = encode_relative_url_path(relative_path);
