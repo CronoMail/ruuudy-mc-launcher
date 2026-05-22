@@ -7,10 +7,10 @@ Launcher updates are separate from pack/mod updates:
 
 ## One-Time GitHub Secret
 
-Add this repository secret before making the first release:
+This repository has the signing secret configured. If you recreate the repository or move it, add:
 
 - `TAURI_SIGNING_PRIVATE_KEY`: contents of `%USERPROFILE%\.tauri\ruuudy-mc-launcher.key`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: leave empty because the current key has no password
+No signing password secret is needed because the current updater key has no password.
 
 The public key is already embedded in `src-tauri/tauri.conf.json`.
 
