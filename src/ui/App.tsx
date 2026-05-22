@@ -489,26 +489,29 @@ export function App() {
     }
   }
 
-  async function importLocalJar() {
+  async function importLocalJars() {
     if (!manifest) return;
     setError(null);
     setModNotice(null);
     const selected = await open({
-      multiple: false,
+      multiple: true,
       filters: [{ name: "Minecraft Mod Jar", extensions: ["jar"] }]
     });
-    if (typeof selected !== "string") return;
+    const jarPaths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (jarPaths.length === 0) return;
 
     setModLoading(true);
     try {
-      const nextManifest = await invoke<PackManifest>("import_local_jar_to_profile", {
+      const nextManifest = await invoke<PackManifest>("import_local_jars_to_profile", {
         code,
         manifest,
-        jarPath: selected
+        jarPaths
       });
       await loadManifest(code.trim().toUpperCase(), nextManifest);
       await refreshProfiles();
-      setModNotice("Local jar imported. Click Publish to upload it for friends.");
+      setModNotice(
+        `${jarPaths.length} local jar${jarPaths.length === 1 ? "" : "s"} imported. Click Publish to upload ${jarPaths.length === 1 ? "it" : "them"} for friends.`
+      );
     } catch (err) {
       setError(String(err));
     } finally {
@@ -789,9 +792,9 @@ export function App() {
                     <RefreshCcw size={18} />
                     Sync Folder
                   </button>
-                  <button className="secondary-button" onClick={importLocalJar} disabled={modLoading}>
+                  <button className="secondary-button" onClick={importLocalJars} disabled={modLoading}>
                     <Upload size={18} />
-                    Import Jar
+                    Import Jars
                   </button>
                 </div>
 

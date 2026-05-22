@@ -885,55 +885,20 @@ fn import_local_jar_to_profile(
     manifest: PackManifest,
     jar_path: String,
 ) -> LauncherResult<PackManifest> {
+    import_local_jars_to_profile(code, manifest, vec![jar_path])
+}
+
+#[tauri::command]
+fn import_local_jars_to_profile(
+    code: String,
+    manifest: PackManifest,
+    jar_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
     let code = normalize_pack_code(&code)?;
     validate_manifest(&manifest)?;
-    let source_path = PathBuf::from(jar_path);
-    if !source_path.exists() || !source_path.is_file() {
-        return Err(LauncherError::Message(
-            "Selected jar file does not exist.".to_string(),
-        ));
-    }
-
-    let filename = source_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| LauncherError::Message("Selected jar has no filename.".to_string()))?
-        .to_string();
-    if !filename.to_lowercase().ends_with(".jar") {
-        return Err(LauncherError::Message(
-            "Only .jar files can be imported as local mods.".to_string(),
-        ));
-    }
-
-    let relative_path = format!("mods/{filename}");
     let profile_dir = profile_dir(&manifest)?;
-    let target = profile_dir.join(safe_relative_path(&relative_path)?);
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let bytes = fs::read(&source_path)?;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
-    let size = bytes.len() as u64;
-    fs::write(&target, bytes)?;
-
-    let mut next_manifest = manifest;
-    next_manifest
-        .files
-        .retain(|file| manifest_file_relative_path(file) != relative_path);
-    next_manifest
-        .overrides
-        .retain(|override_file| override_file.path.replace('\\', "/") != relative_path);
-    next_manifest.overrides.push(ManifestOverride {
-        path: relative_path.clone(),
-        url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
-        sha256,
-        size,
-    });
-    next_manifest
-        .overrides
-        .sort_by(|left, right| left.path.cmp(&right.path));
-    next_manifest.version = format!("manual-{}", unix_timestamp());
+    let source_paths = jar_paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let next_manifest = add_local_jar_overrides(manifest, &profile_dir, &source_paths)?;
 
     let next_state = LocalInstallState {
         pack_id: next_manifest.pack_id.clone(),
@@ -943,6 +908,67 @@ fn import_local_jar_to_profile(
     write_install_state(&profile_dir, &next_state)?;
     save_profile_manifest(code, next_manifest.clone())?;
     Ok(next_manifest)
+}
+
+fn add_local_jar_overrides(
+    mut manifest: PackManifest,
+    profile_dir: &Path,
+    jar_paths: &[PathBuf],
+) -> LauncherResult<PackManifest> {
+    if jar_paths.is_empty() {
+        return Err(LauncherError::Message(
+            "Select at least one local jar to import.".to_string(),
+        ));
+    }
+
+    for source_path in jar_paths {
+        if !source_path.exists() || !source_path.is_file() {
+            return Err(LauncherError::Message(
+                "Selected jar file does not exist.".to_string(),
+            ));
+        }
+
+        let filename = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| LauncherError::Message("Selected jar has no filename.".to_string()))?
+            .to_string();
+        if !filename.to_lowercase().ends_with(".jar") {
+            return Err(LauncherError::Message(
+                "Only .jar files can be imported as local mods.".to_string(),
+            ));
+        }
+
+        let relative_path = format!("mods/{filename}");
+        let target = profile_dir.join(safe_relative_path(&relative_path)?);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let bytes = fs::read(&source_path)?;
+        let sha256 = hex::encode(Sha256::digest(&bytes));
+        let size = bytes.len() as u64;
+        fs::write(&target, &bytes)?;
+
+        manifest
+            .files
+            .retain(|file| manifest_file_relative_path(file) != relative_path);
+        manifest
+            .overrides
+            .retain(|override_file| override_file.path.replace('\\', "/") != relative_path);
+        manifest.overrides.push(ManifestOverride {
+            path: relative_path.clone(),
+            url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
+            sha256,
+            size,
+        });
+    }
+
+    manifest
+        .overrides
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    manifest.version = format!("manual-{}", unix_timestamp());
+    Ok(manifest)
 }
 
 #[tauri::command]
@@ -1005,6 +1031,7 @@ pub fn run() {
             search_modrinth_mods,
             add_modrinth_mod_to_profile,
             import_local_jar_to_profile,
+            import_local_jars_to_profile,
             open_profile_folder,
             open_minecraft_launcher
         ])
@@ -2246,5 +2273,63 @@ mod tests {
         assert!(first_install.next_managed_files.is_empty());
         assert!(resync.downloads.is_empty());
         assert!(resync.next_managed_files.is_empty());
+    }
+
+    #[test]
+    fn local_jar_import_accepts_multiple_jars_and_replaces_by_filename() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_dir = root.join("source");
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(profile_dir.join("mods")).unwrap();
+        let first = source_dir.join("alpha.jar");
+        let second = source_dir.join("beta.jar");
+        fs::write(&first, b"alpha-new").unwrap();
+        fs::write(&second, b"beta").unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-old".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: vec![ManifestOverride {
+                path: "mods/alpha.jar".to_string(),
+                url: "local-pending://mods/alpha.jar".to_string(),
+                sha256: "0".repeat(64),
+                size: 1,
+            }],
+            default_options: None,
+        };
+
+        let next_manifest =
+            add_local_jar_overrides(manifest, &profile_dir, &[first.clone(), second.clone()])
+                .unwrap();
+
+        let override_paths = next_manifest
+            .overrides
+            .iter()
+            .map(|override_file| override_file.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(override_paths, vec!["mods/alpha.jar", "mods/beta.jar"]);
+        assert_eq!(fs::read(profile_dir.join("mods/alpha.jar")).unwrap(), b"alpha-new");
+        assert_eq!(fs::read(profile_dir.join("mods/beta.jar")).unwrap(), b"beta");
+        assert!(next_manifest.version.starts_with("manual-"));
+        let _ = fs::remove_dir_all(root);
     }
 }
