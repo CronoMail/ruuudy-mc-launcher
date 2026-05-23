@@ -653,6 +653,16 @@ fn save_profile_manifest(code: String, manifest: PackManifest) -> LauncherResult
     profile_summary(&code, &manifest, true)
 }
 
+fn save_published_manifest(code: &str, manifest: &PackManifest) -> LauncherResult<()> {
+    save_local_manifest(code, manifest)?;
+    upsert_registry_profile(RegistryProfile {
+        code: code.to_string(),
+        pack_id: manifest.pack_id.clone(),
+        pack_name: manifest.pack_name.clone(),
+        manifest_path: manifest_path_for_code(code)?.to_string_lossy().to_string(),
+    })
+}
+
 #[tauri::command]
 async fn sync_manifest_with_profile_folder(
     code: String,
@@ -727,7 +737,7 @@ fn publish_profile_blocking(
         .json(&publish_manifest)
         .send()?
         .error_for_status()?;
-    save_local_manifest(&code, &publish_manifest)?;
+    save_published_manifest(&code, &publish_manifest)?;
 
     Ok(PublishSummary {
         code: code.clone(),
@@ -820,13 +830,7 @@ fn upload_default_options_blocking(
         .json(&publish_manifest)
         .send()?
         .error_for_status()?;
-    save_local_manifest(&code, &publish_manifest)?;
-    upsert_registry_profile(RegistryProfile {
-        code: code.clone(),
-        pack_id: publish_manifest.pack_id.clone(),
-        pack_name: publish_manifest.pack_name.clone(),
-        manifest_path: manifest_path_for_code(&code)?.to_string_lossy().to_string(),
-    })?;
+    save_published_manifest(&code, &publish_manifest)?;
 
     Ok(PublishSummary {
         code: code.clone(),
@@ -1600,12 +1604,6 @@ fn upload_unrepresented_managed_files(
 
     if uploaded_files > 0 {
         publish_manifest.version = format!("manual-{}", unix_timestamp());
-        let next_state = LocalInstallState {
-            pack_id: publish_manifest.pack_id.clone(),
-            manifest_version: publish_manifest.version.clone(),
-            managed_files: build_install_plan(&publish_manifest, None).next_managed_files,
-        };
-        write_install_state(&profile_dir, &next_state)?;
     }
 
     Ok((publish_manifest, uploaded_files))
@@ -2455,6 +2453,63 @@ mod tests {
             b"beta"
         );
         assert!(next_manifest.version.starts_with("manual-"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_published_manifest_does_not_mark_profile_installed() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-publish-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &root);
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: None,
+        };
+        let profile_dir = profile_dir(&manifest).unwrap();
+        fs::create_dir_all(profile_dir.join(".ruuudy-launcher")).unwrap();
+        write_install_state(
+            &profile_dir,
+            &LocalInstallState {
+                pack_id: manifest.pack_id.clone(),
+                manifest_version: "manual-old".to_string(),
+                managed_files: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        save_published_manifest("JUNFEET", &manifest).unwrap();
+
+        let status = get_install_status(manifest).unwrap();
+        assert!(!status.installed);
+        assert_eq!(status.installed_version.as_deref(), Some("manual-old"));
+        assert_eq!(status.latest_version, "manual-new");
+
+        if let Some(appdata) = previous_appdata {
+            std::env::set_var("APPDATA", appdata);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
         let _ = fs::remove_dir_all(root);
     }
 }
