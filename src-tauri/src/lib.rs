@@ -983,6 +983,19 @@ async fn import_local_jars_to_profile(
     .map_err(|error| LauncherError::Message(format!("Local jar import worker failed: {error}")))?
 }
 
+#[tauri::command]
+async fn import_local_resource_packs_to_profile(
+    code: String,
+    manifest: PackManifest,
+    resource_pack_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_local_resource_packs_to_profile_blocking(code, manifest, resource_pack_paths)
+    })
+    .await
+    .map_err(|error| LauncherError::Message(format!("Resource pack import worker failed: {error}")))?
+}
+
 fn import_local_jars_to_profile_blocking(
     code: String,
     manifest: PackManifest,
@@ -993,6 +1006,30 @@ fn import_local_jars_to_profile_blocking(
     let profile_dir = profile_dir(&manifest)?;
     let source_paths = jar_paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let next_manifest = add_local_jar_overrides(manifest, &profile_dir, &source_paths)?;
+
+    let next_state = LocalInstallState {
+        pack_id: next_manifest.pack_id.clone(),
+        manifest_version: next_manifest.version.clone(),
+        managed_files: build_install_plan(&next_manifest, None).next_managed_files,
+    };
+    write_install_state(&profile_dir, &next_state)?;
+    save_profile_manifest(code, next_manifest.clone())?;
+    Ok(next_manifest)
+}
+
+fn import_local_resource_packs_to_profile_blocking(
+    code: String,
+    manifest: PackManifest,
+    resource_pack_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
+    let code = normalize_pack_code(&code)?;
+    validate_manifest(&manifest)?;
+    let profile_dir = profile_dir(&manifest)?;
+    let source_paths = resource_pack_paths
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let next_manifest = add_local_resource_pack_overrides(manifest, &profile_dir, &source_paths)?;
 
     let next_state = LocalInstallState {
         pack_id: next_manifest.pack_id.clone(),
@@ -1034,28 +1071,7 @@ fn add_local_jar_overrides(
         }
 
         let relative_path = format!("mods/{filename}");
-        let target = profile_dir.join(safe_relative_path(&relative_path)?);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let bytes = fs::read(&source_path)?;
-        let sha256 = hex::encode(Sha256::digest(&bytes));
-        let size = bytes.len() as u64;
-        fs::write(&target, &bytes)?;
-
-        manifest
-            .files
-            .retain(|file| manifest_file_relative_path(file) != relative_path);
-        manifest
-            .overrides
-            .retain(|override_file| override_file.path.replace('\\', "/") != relative_path);
-        manifest.overrides.push(ManifestOverride {
-            path: relative_path.clone(),
-            url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
-            sha256,
-            size,
-        });
+        add_local_override_file(&mut manifest, profile_dir, source_path, &relative_path)?;
     }
 
     manifest
@@ -1063,6 +1079,78 @@ fn add_local_jar_overrides(
         .sort_by(|left, right| left.path.cmp(&right.path));
     manifest.version = format!("manual-{}", unix_timestamp());
     Ok(manifest)
+}
+
+fn add_local_resource_pack_overrides(
+    mut manifest: PackManifest,
+    profile_dir: &Path,
+    resource_pack_paths: &[PathBuf],
+) -> LauncherResult<PackManifest> {
+    if resource_pack_paths.is_empty() {
+        return Err(LauncherError::Message(
+            "Select at least one resource pack zip to import.".to_string(),
+        ));
+    }
+
+    for source_path in resource_pack_paths {
+        if !source_path.exists() || !source_path.is_file() {
+            return Err(LauncherError::Message(
+                "Selected resource pack file does not exist.".to_string(),
+            ));
+        }
+
+        let filename = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| LauncherError::Message("Selected resource pack has no filename.".to_string()))?
+            .to_string();
+        if !filename.to_lowercase().ends_with(".zip") {
+            return Err(LauncherError::Message(
+                "Only .zip files can be imported as local resource packs.".to_string(),
+            ));
+        }
+
+        let relative_path = format!("resourcepacks/{filename}");
+        add_local_override_file(&mut manifest, profile_dir, source_path, &relative_path)?;
+    }
+
+    manifest
+        .overrides
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    manifest.version = format!("manual-{}", unix_timestamp());
+    Ok(manifest)
+}
+
+fn add_local_override_file(
+    manifest: &mut PackManifest,
+    profile_dir: &Path,
+    source_path: &Path,
+    relative_path: &str,
+) -> LauncherResult<()> {
+    let target = profile_dir.join(safe_relative_path(relative_path)?);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let bytes = fs::read(source_path)?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let size = bytes.len() as u64;
+    fs::write(&target, &bytes)?;
+
+    manifest
+        .files
+        .retain(|file| manifest_file_relative_path(file) != relative_path);
+    manifest
+        .overrides
+        .retain(|override_file| override_file.path.replace('\\', "/") != relative_path);
+    manifest.overrides.push(ManifestOverride {
+        path: relative_path.to_string(),
+        url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
+        sha256,
+        size,
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1126,6 +1214,7 @@ pub fn run() {
             add_modrinth_mod_to_profile,
             import_local_jar_to_profile,
             import_local_jars_to_profile,
+            import_local_resource_packs_to_profile,
             open_profile_folder,
             open_minecraft_launcher
         ])
@@ -1512,7 +1601,7 @@ fn upload_unrepresented_managed_files(
     let mut uploaded_files = 0;
     publish_manifest
         .overrides
-        .retain(|override_file| is_override_mod_jar(&override_file.path));
+        .retain(|override_file| is_managed_override_file(&override_file.path));
 
     if publish_manifest
         .default_options
@@ -1573,7 +1662,7 @@ fn upload_unrepresented_managed_files(
         if represented.contains(&relative_path) {
             continue;
         }
-        if !is_override_mod_jar(&relative_path) {
+        if !is_managed_override_file(&relative_path) {
             continue;
         }
 
@@ -2234,6 +2323,15 @@ fn is_override_mod_jar(relative_path: &str) -> bool {
     normalized.starts_with("mods/") && normalized.ends_with(".jar")
 }
 
+fn is_resource_pack_zip(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    normalized.starts_with("resourcepacks/") && normalized.ends_with(".zip")
+}
+
+fn is_managed_override_file(relative_path: &str) -> bool {
+    is_override_mod_jar(relative_path) || is_resource_pack_zip(relative_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2454,6 +2552,64 @@ mod tests {
         );
         assert!(next_manifest.version.starts_with("manual-"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_resource_pack_import_adds_resourcepack_overrides() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-resourcepack-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_dir = root.join("source");
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(&source_dir).unwrap();
+        let pack = source_dir.join("RCT-Trainer-Textures-Plus.zip");
+        fs::write(&pack, b"resource-pack").unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-old".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: None,
+        };
+
+        let next_manifest =
+            add_local_resource_pack_overrides(manifest, &profile_dir, &[pack.clone()]).unwrap();
+
+        assert_eq!(next_manifest.overrides.len(), 1);
+        assert_eq!(
+            next_manifest.overrides[0].path,
+            "resourcepacks/RCT-Trainer-Textures-Plus.zip"
+        );
+        assert_eq!(
+            fs::read(profile_dir.join("resourcepacks/RCT-Trainer-Textures-Plus.zip")).unwrap(),
+            b"resource-pack"
+        );
+        assert!(is_managed_override_file(&next_manifest.overrides[0].path));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_override_files_include_mod_jars_and_resource_pack_zips() {
+        assert!(is_managed_override_file("mods/local-mod.jar"));
+        assert!(is_managed_override_file("resourcepacks/RCT.zip"));
+        assert!(!is_managed_override_file("datapacks/RCT.zip"));
+        assert!(!is_managed_override_file("resourcepacks/readme.txt"));
     }
 
     #[test]

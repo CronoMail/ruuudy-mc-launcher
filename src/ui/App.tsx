@@ -177,12 +177,12 @@ export function App() {
         detail: file.filename
       })),
       ...manifest.overrides
-        .filter((override) => isOverrideModJar(override.path))
+        .filter((override) => isManagedOverrideContent(override.path))
         .map((override) => ({
           kind: "override" as const,
           override,
           filename: override.path.split(/[\\/]/).at(-1) ?? override.path,
-          title: displayOverrideModName(override),
+          title: displayOverrideContentName(override),
           detail: `${override.path} - hosted override`
         }))
     ].sort((left, right) => left.title.localeCompare(right.title));
@@ -519,6 +519,36 @@ export function App() {
     }
   }
 
+  async function importResourcePacks() {
+    if (!manifest) return;
+    setError(null);
+    setModNotice(null);
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: "Minecraft Resource Pack Zip", extensions: ["zip"] }]
+    });
+    const resourcePackPaths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (resourcePackPaths.length === 0) return;
+
+    setModLoading(true);
+    try {
+      const nextManifest = await invoke<PackManifest>("import_local_resource_packs_to_profile", {
+        code,
+        manifest,
+        resourcePackPaths
+      });
+      await loadManifest(code.trim().toUpperCase(), nextManifest);
+      await refreshProfiles();
+      setModNotice(
+        `${resourcePackPaths.length} resource pack${resourcePackPaths.length === 1 ? "" : "s"} imported. Click Publish to upload ${resourcePackPaths.length === 1 ? "it" : "them"} for friends.`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setModLoading(false);
+    }
+  }
+
   async function removeMod(mod: ManagedMod) {
     if (!manifest) return;
     const filename = mod.filename;
@@ -796,15 +826,19 @@ export function App() {
                     <Upload size={18} />
                     Import Jars
                   </button>
+                  <button className="secondary-button" onClick={importResourcePacks} disabled={modLoading}>
+                    <Upload size={18} />
+                    Import Resource Packs
+                  </button>
                 </div>
 
                 <div className="managed-mods">
                   <div className="section-title">
-                    <span className="eyebrow">Profile mods</span>
+                    <span className="eyebrow">Profile content</span>
                     <strong>{managedMods.length}</strong>
                   </div>
                   {managedMods.length === 0 ? (
-                    <p className="muted">No managed mods in this profile yet.</p>
+                    <p className="muted">No managed mods or resource packs in this profile yet.</p>
                   ) : (
                     managedMods.map((mod) => (
                       <div className="mod-row" key={`${mod.kind}-${mod.detail}`}>
@@ -915,12 +949,21 @@ function displayFileModName(file: ManifestFile): string {
   return file.filename.replace(/\.jar$/i, "").replace(/[-_]+/g, " ");
 }
 
-function displayOverrideModName(override: ManifestOverride): string {
+function displayOverrideContentName(override: ManifestOverride): string {
   const filename = override.path.split(/[\\/]/).at(-1) ?? override.path;
-  return filename.replace(/\.jar$/i, "").replace(/[-_]+/g, " ");
+  return filename.replace(/\.(jar|zip)$/i, "").replace(/[-_]+/g, " ");
 }
 
 function isOverrideModJar(path: string): boolean {
   const normalized = path.replaceAll("\\", "/").toLowerCase();
   return normalized.startsWith("mods/") && normalized.endsWith(".jar");
+}
+
+function isResourcePackZip(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/").toLowerCase();
+  return normalized.startsWith("resourcepacks/") && normalized.endsWith(".zip");
+}
+
+function isManagedOverrideContent(path: string): boolean {
+  return isOverrideModJar(path) || isResourcePackZip(path);
 }
