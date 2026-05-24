@@ -426,6 +426,8 @@ fn install_pack_blocking(
         remove_managed_file(&profile_dir, relative_path)?;
     }
 
+    sync_resource_pack_options(&profile_dir, &manifest, state.as_ref())?;
+
     emit_progress(
         &app,
         "fabric",
@@ -993,7 +995,9 @@ async fn import_local_resource_packs_to_profile(
         import_local_resource_packs_to_profile_blocking(code, manifest, resource_pack_paths)
     })
     .await
-    .map_err(|error| LauncherError::Message(format!("Resource pack import worker failed: {error}")))?
+    .map_err(|error| {
+        LauncherError::Message(format!("Resource pack import worker failed: {error}"))
+    })?
 }
 
 fn import_local_jars_to_profile_blocking(
@@ -1102,7 +1106,9 @@ fn add_local_resource_pack_overrides(
         let filename = source_path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| LauncherError::Message("Selected resource pack has no filename.".to_string()))?
+            .ok_or_else(|| {
+                LauncherError::Message("Selected resource pack has no filename.".to_string())
+            })?
             .to_string();
         if !filename.to_lowercase().ends_with(".zip") {
             return Err(LauncherError::Message(
@@ -2328,6 +2334,124 @@ fn is_resource_pack_zip(relative_path: &str) -> bool {
     normalized.starts_with("resourcepacks/") && normalized.ends_with(".zip")
 }
 
+fn resource_pack_options_entry(relative_path: &str) -> Option<String> {
+    if !is_resource_pack_zip(relative_path) {
+        return None;
+    }
+
+    let normalized = relative_path.replace('\\', "/");
+    normalized
+        .rsplit('/')
+        .next()
+        .filter(|filename| !filename.is_empty())
+        .map(|filename| format!("file/{filename}"))
+}
+
+fn manifest_resource_pack_entries(manifest: &PackManifest) -> Vec<String> {
+    let mut entries = Vec::new();
+    for override_file in &manifest.overrides {
+        if let Some(entry) = resource_pack_options_entry(&override_file.path) {
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+    }
+    entries
+}
+
+fn parse_options_list(value: &str) -> Vec<String> {
+    serde_json::from_str(value.trim()).unwrap_or_default()
+}
+
+fn read_options_list(lines: &[String], key: &str) -> Vec<String> {
+    let prefix = format!("{key}:");
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(parse_options_list)
+        .unwrap_or_default()
+}
+
+fn upsert_options_list(
+    lines: &mut Vec<String>,
+    key: &str,
+    values: &[String],
+) -> LauncherResult<()> {
+    let next_line = format!("{key}:{}", serde_json::to_string(values)?);
+    let prefix = format!("{key}:");
+    if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
+        *line = next_line;
+    } else {
+        lines.push(next_line);
+    }
+    Ok(())
+}
+
+fn sync_resource_pack_options(
+    profile_dir: &Path,
+    manifest: &PackManifest,
+    previous_state: Option<&LocalInstallState>,
+) -> LauncherResult<()> {
+    let current_entries = manifest_resource_pack_entries(manifest);
+    if current_entries.is_empty() && previous_state.is_none() {
+        return Ok(());
+    }
+
+    let current_set: BTreeSet<String> = current_entries.iter().cloned().collect();
+    let stale_entries: BTreeSet<String> = previous_state
+        .map(|state| {
+            state
+                .managed_files
+                .iter()
+                .filter_map(|path| resource_pack_options_entry(path))
+                .filter(|entry| !current_set.contains(entry))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if current_entries.is_empty() && stale_entries.is_empty() {
+        return Ok(());
+    }
+
+    let options_path = profile_dir.join("options.txt");
+    let mut lines = if options_path.exists() {
+        fs::read_to_string(&options_path)?
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let mut resource_packs = read_options_list(&lines, "resourcePacks")
+        .into_iter()
+        .filter(|entry| !stale_entries.contains(entry))
+        .collect::<Vec<_>>();
+    if !resource_packs.iter().any(|entry| entry == "vanilla") {
+        resource_packs.insert(0, "vanilla".to_string());
+    }
+    for entry in current_entries {
+        if !resource_packs.contains(&entry) {
+            resource_packs.push(entry);
+        }
+    }
+
+    let mut incompatible_packs = read_options_list(&lines, "incompatibleResourcePacks")
+        .into_iter()
+        .filter(|entry| !current_set.contains(entry) && !stale_entries.contains(entry))
+        .collect::<Vec<_>>();
+    incompatible_packs.dedup();
+
+    upsert_options_list(&mut lines, "resourcePacks", &resource_packs)?;
+    upsert_options_list(&mut lines, "incompatibleResourcePacks", &incompatible_packs)?;
+
+    if let Some(parent) = options_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(options_path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
+}
+
 fn is_managed_override_file(relative_path: &str) -> bool {
     is_override_mod_jar(relative_path) || is_resource_pack_zip(relative_path)
 }
@@ -2610,6 +2734,113 @@ mod tests {
         assert!(is_managed_override_file("resourcepacks/RCT.zip"));
         assert!(!is_managed_override_file("datapacks/RCT.zip"));
         assert!(!is_managed_override_file("resourcepacks/readme.txt"));
+    }
+
+    #[test]
+    fn sync_resource_packs_enables_managed_packs_in_options() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-resourcepack-options-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            profile_dir.join("options.txt"),
+            "resourcePacks:[\"vanilla\",\"file/Personal.zip\"]\nincompatibleResourcePacks:[\"file/RCT.zip\"]\n",
+        )
+        .unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: vec![ManifestOverride {
+                path: "resourcepacks/RCT.zip".to_string(),
+                url: "local-pending://resourcepacks/RCT.zip".to_string(),
+                sha256: "1".repeat(64),
+                size: 10,
+            }],
+            default_options: None,
+        };
+
+        sync_resource_pack_options(&profile_dir, &manifest, None).unwrap();
+
+        let options = fs::read_to_string(profile_dir.join("options.txt")).unwrap();
+        assert!(
+            options.contains("resourcePacks:[\"vanilla\",\"file/Personal.zip\",\"file/RCT.zip\"]")
+        );
+        assert!(options.contains("incompatibleResourcePacks:[]"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_resource_packs_removes_stale_managed_packs_from_options() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-resourcepack-stale-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            profile_dir.join("options.txt"),
+            "resourcePacks:[\"vanilla\",\"file/Old.zip\",\"file/Personal.zip\"]\n",
+        )
+        .unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: vec![ManifestOverride {
+                path: "resourcepacks/New.zip".to_string(),
+                url: "local-pending://resourcepacks/New.zip".to_string(),
+                sha256: "2".repeat(64),
+                size: 10,
+            }],
+            default_options: None,
+        };
+        let previous_state = LocalInstallState {
+            pack_id: "fakersbob".to_string(),
+            manifest_version: "manual-old".to_string(),
+            managed_files: vec!["resourcepacks/Old.zip".to_string()],
+        };
+
+        sync_resource_pack_options(&profile_dir, &manifest, Some(&previous_state)).unwrap();
+
+        let options = fs::read_to_string(profile_dir.join("options.txt")).unwrap();
+        assert!(
+            options.contains("resourcePacks:[\"vanilla\",\"file/Personal.zip\",\"file/New.zip\"]")
+        );
+        assert!(!options.contains("file/Old.zip"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
