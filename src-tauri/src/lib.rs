@@ -1029,11 +1029,18 @@ fn import_local_resource_packs_to_profile_blocking(
     let code = normalize_pack_code(&code)?;
     validate_manifest(&manifest)?;
     let profile_dir = profile_dir(&manifest)?;
+    let previous_state = read_install_state(&profile_dir)?;
     let source_paths = resource_pack_paths
         .into_iter()
         .map(PathBuf::from)
         .collect::<Vec<_>>();
-    let next_manifest = add_local_resource_pack_overrides(manifest, &profile_dir, &source_paths)?;
+    let mut next_manifest =
+        add_local_resource_pack_overrides(manifest, &profile_dir, &source_paths)?;
+    sync_resource_pack_options(&profile_dir, &next_manifest, previous_state.as_ref())?;
+    next_manifest.default_options = Some(local_pending_override_for_profile_file(
+        &profile_dir,
+        "options.txt",
+    )?);
 
     let next_state = LocalInstallState {
         pack_id: next_manifest.pack_id.clone(),
@@ -1043,6 +1050,21 @@ fn import_local_resource_packs_to_profile_blocking(
     write_install_state(&profile_dir, &next_state)?;
     save_profile_manifest(code, next_manifest.clone())?;
     Ok(next_manifest)
+}
+
+fn local_pending_override_for_profile_file(
+    profile_dir: &Path,
+    relative_path: &str,
+) -> LauncherResult<ManifestOverride> {
+    let safe_path = safe_relative_path(relative_path)?;
+    let path = profile_dir.join(safe_path);
+    let bytes = fs::read(&path)?;
+    Ok(ManifestOverride {
+        path: relative_path.to_string(),
+        url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
+        sha256: hex::encode(Sha256::digest(&bytes)),
+        size: bytes.len() as u64,
+    })
 }
 
 fn add_local_jar_overrides(
