@@ -45,7 +45,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -81,7 +82,8 @@ button:disabled {
   opacity: 0.52;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--line);
@@ -95,7 +97,8 @@ input {
     background 140ms ease;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: #66666d;
   background: #111113;
 }
@@ -278,14 +281,16 @@ input:focus {
 
 .admin-box label,
 .share-panel label,
-.mod-search label {
+.mod-search label,
+.manual-panel label {
   display: grid;
   gap: 0.35rem;
 }
 
 .admin-box span,
 .share-panel span,
-.mod-search span {
+.mod-search span,
+.manual-panel span {
   color: var(--faint);
   font-size: 0.74rem;
   font-weight: 700;
@@ -359,6 +364,18 @@ input:focus {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.75rem;
+}
+
+.manual-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: #101011;
 }
 
 .pack-panel {
@@ -612,6 +629,7 @@ input:focus {
 
   .hero-panel,
   .done-panel,
+  .manual-panel,
   .share-panel,
   .mod-search,
   .mod-card {

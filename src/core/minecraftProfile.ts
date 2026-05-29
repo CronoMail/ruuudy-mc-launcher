@@ -19,6 +19,7 @@ export type LauncherProfileInput = {
   profileName: string;
   gameDir: string;
   minecraftVersion: string;
+  loaderType?: "vanilla" | "fabric" | "forge" | "neoforge";
   loaderVersion: string;
 };
 
@@ -40,12 +41,33 @@ export function createOrUpdateLauncherProfile(
         lastUsed: previous?.lastUsed ?? now,
         icon: previous?.icon,
         gameDir: input.gameDir,
-        lastVersionId: fabricVersionId(input.loaderVersion, input.minecraftVersion)
+        lastVersionId: loaderVersionId(
+          input.loaderType ?? "fabric",
+          input.loaderVersion,
+          input.minecraftVersion
+        )
       }
     }
   };
 }
 
 export function fabricVersionId(loaderVersion: string, minecraftVersion: string): string {
-  return `fabric-loader-${loaderVersion}-${minecraftVersion}`;
+  return loaderVersionId("fabric", loaderVersion, minecraftVersion);
+}
+
+export function loaderVersionId(
+  loaderType: "vanilla" | "fabric" | "forge" | "neoforge",
+  loaderVersion: string,
+  minecraftVersion: string
+): string {
+  switch (loaderType) {
+    case "vanilla":
+      return minecraftVersion;
+    case "fabric":
+      return `fabric-loader-${loaderVersion}-${minecraftVersion}`;
+    case "forge":
+      return `${minecraftVersion}-forge-${loaderVersion}`;
+    case "neoforge":
+      return `neoforge-${loaderVersion}`;
+  }
 }

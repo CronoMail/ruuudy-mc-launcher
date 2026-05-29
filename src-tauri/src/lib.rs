@@ -141,6 +141,7 @@ struct CurseForgeImportSummary {
     pack_name: String,
     profile_dir: String,
     minecraft_version: String,
+    loader_type: String,
     loader_version: String,
     curseforge_mods: usize,
     overrides: usize,
@@ -170,6 +171,7 @@ struct ProfileSummary {
     pack_name: String,
     version: String,
     minecraft_version: String,
+    loader_type: String,
     loader_version: String,
     server: String,
     profile_dir: String,
@@ -192,6 +194,18 @@ struct PublishSummary {
 struct FolderSyncSummary {
     manifest: PackManifest,
     removed_files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualProfileInput {
+    code: String,
+    pack_name: String,
+    minecraft_version: String,
+    loader_type: String,
+    loader_version: String,
+    server_address: String,
+    server_port: u16,
 }
 
 struct ImportedCurseForgeFile {
@@ -430,12 +444,15 @@ fn install_pack_blocking(
 
     emit_progress(
         &app,
-        "fabric",
-        "Installing Fabric launcher profile",
+        "loader",
+        &format!(
+            "Installing {} launcher profile",
+            loader_display_name(&manifest.loader)
+        ),
         total_steps - 1,
         total_steps,
     );
-    install_fabric_profile(&client, &manifest)?;
+    install_loader_profile(&client, &manifest)?;
     upsert_official_launcher_profile(&manifest, &profile_dir, profile_code.as_deref())?;
 
     let next_state = LocalInstallState {
@@ -489,7 +506,7 @@ fn import_curseforge_zip_blocking(
     let manifest_text = read_zip_text(&mut archive, "manifest.json")?;
     let curseforge: CurseForgeManifest = serde_json::from_str(&manifest_text)?;
     let code = unique_share_code(&share_code_from_pack_name(&curseforge.name))?;
-    let loader_version = curseforge_loader_version(&curseforge)?;
+    let loader = curseforge_loader(&curseforge)?;
     let pack_id = unique_pack_id(&format!(
         "{}-{}",
         slugify_pack_id(&curseforge.name),
@@ -546,10 +563,7 @@ fn import_curseforge_zip_blocking(
         pack_name,
         version: format!("curseforge-import-{}", unix_timestamp()),
         minecraft_version: curseforge.minecraft.version,
-        loader: Loader {
-            loader_type: "fabric".to_string(),
-            version: loader_version,
-        },
+        loader,
         server: Server {
             address: "mc.ruuudy.in".to_string(),
             port: 25565,
@@ -561,12 +575,15 @@ fn import_curseforge_zip_blocking(
 
     emit_progress(
         &app,
-        "fabric",
-        "Installing Fabric launcher profile",
+        "loader",
+        &format!(
+            "Installing {} launcher profile",
+            loader_display_name(&manifest.loader)
+        ),
         total_steps - 1,
         total_steps,
     );
-    install_fabric_profile(&client, &manifest)?;
+    install_loader_profile(&client, &manifest)?;
     upsert_official_launcher_profile(&manifest, &profile_dir, Some(&code))?;
 
     managed_files.sort();
@@ -601,6 +618,7 @@ fn import_curseforge_zip_blocking(
         pack_name: manifest.pack_name.clone(),
         profile_dir: profile_dir.to_string_lossy().to_string(),
         minecraft_version: manifest.minecraft_version.clone(),
+        loader_type: manifest.loader.loader_type.clone(),
         loader_version: manifest.loader.version.clone(),
         curseforge_mods: required_curseforge_files,
         overrides: manifest.overrides.len(),
@@ -657,6 +675,54 @@ fn save_profile_manifest(code: String, manifest: PackManifest) -> LauncherResult
         manifest_path: manifest_path_for_code(&code)?.to_string_lossy().to_string(),
     })?;
     profile_summary(&code, &manifest, true)
+}
+
+#[tauri::command]
+fn create_blank_profile(input: ManualProfileInput) -> LauncherResult<ProfileSummary> {
+    let code = normalize_pack_code(&input.code)?;
+    let loader_type = normalize_loader_type(&input.loader_type)?;
+    let loader_version = input.loader_version.trim().to_string();
+    if loader_type != "vanilla" && loader_version.is_empty() {
+        return Err(LauncherError::Message(
+            "Loader version is required for Fabric, Forge, and NeoForge profiles.".to_string(),
+        ));
+    }
+
+    let pack_name = if input.pack_name.trim().is_empty() {
+        code.clone()
+    } else {
+        input.pack_name.trim().to_string()
+    };
+    let pack_id = unique_pack_id(&format!(
+        "{}-{}",
+        slugify_pack_id(&pack_name),
+        code.to_lowercase()
+    ))?;
+    let server_address = if input.server_address.trim().is_empty() {
+        "mc.ruuudy.in".to_string()
+    } else {
+        input.server_address.trim().to_string()
+    };
+    let manifest = PackManifest {
+        schema_version: 1,
+        pack_id,
+        pack_name,
+        version: format!("manual-{}", unix_timestamp()),
+        minecraft_version: input.minecraft_version.trim().to_string(),
+        loader: Loader {
+            loader_type,
+            version: loader_version,
+        },
+        server: Server {
+            address: server_address,
+            port: input.server_port,
+        },
+        files: Vec::new(),
+        overrides: Vec::new(),
+        default_options: None,
+    };
+    validate_manifest(&manifest)?;
+    save_profile_manifest(code, manifest)
 }
 
 fn save_published_manifest(code: &str, manifest: &PackManifest) -> LauncherResult<()> {
@@ -1238,6 +1304,7 @@ pub fn run() {
             delete_profile,
             export_profile_manifest,
             save_profile_manifest,
+            create_blank_profile,
             sync_manifest_with_profile_folder,
             publish_profile,
             upload_default_options,
@@ -1296,10 +1363,18 @@ fn validate_manifest(manifest: &PackManifest) -> LauncherResult<()> {
         )));
     }
 
-    if manifest.loader.loader_type != "fabric" {
-        return Err(LauncherError::Message(
-            "Only Fabric packs are supported in this launcher version.".to_string(),
-        ));
+    let loader_type = normalize_loader_type(&manifest.loader.loader_type)?;
+    if loader_type != manifest.loader.loader_type {
+        return Err(LauncherError::Message(format!(
+            "Manifest loader type must be lowercase '{}'.",
+            loader_type
+        )));
+    }
+    if manifest.loader.loader_type != "vanilla" && manifest.loader.version.trim().is_empty() {
+        return Err(LauncherError::Message(format!(
+            "{} loader version is required.",
+            loader_display_name(&manifest.loader)
+        )));
     }
 
     for file in &manifest.files {
@@ -1349,6 +1424,18 @@ fn validate_manifest(manifest: &PackManifest) -> LauncherResult<()> {
     }
 
     Ok(())
+}
+
+fn normalize_loader_type(loader_type: &str) -> LauncherResult<String> {
+    let normalized = loader_type.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "vanilla" | "fabric" | "forge" => Ok(normalized),
+        "neoforge" | "neo-forge" => Ok("neoforge".to_string()),
+        _ => Err(LauncherError::Message(format!(
+            "Unsupported loader '{}'. Supported loaders are Vanilla, Fabric, Forge, and NeoForge.",
+            loader_type
+        ))),
+    }
 }
 
 fn is_hex_hash(value: &str, expected_len: usize) -> bool {
@@ -1875,9 +1962,24 @@ fn safe_relative_path(path: &str) -> LauncherResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn install_loader_profile(client: &Client, manifest: &PackManifest) -> LauncherResult<()> {
+    match manifest.loader.loader_type.as_str() {
+        "fabric" => install_fabric_profile(client, manifest),
+        "vanilla" | "forge" | "neoforge" => Ok(()),
+        loader => Err(LauncherError::Message(format!(
+            "Unsupported loader '{}'.",
+            loader
+        ))),
+    }
+}
+
 fn install_fabric_profile(client: &Client, manifest: &PackManifest) -> LauncherResult<()> {
     let minecraft_dir = minecraft_dir()?;
-    let version_id = fabric_version_id(&manifest.loader.version, &manifest.minecraft_version);
+    let version_id = loader_version_id(
+        &manifest.loader.loader_type,
+        &manifest.loader.version,
+        &manifest.minecraft_version,
+    )?;
     let version_dir = minecraft_dir.join("versions").join(&version_id);
     let version_json = version_dir.join(format!("{version_id}.json"));
     if version_json.exists() {
@@ -1923,7 +2025,11 @@ fn upsert_official_launcher_profile(
         "created": now,
         "lastUsed": now,
         "gameDir": profile_dir.to_string_lossy(),
-        "lastVersionId": fabric_version_id(&manifest.loader.version, &manifest.minecraft_version),
+        "lastVersionId": loader_version_id(
+            &manifest.loader.loader_type,
+            &manifest.loader.version,
+            &manifest.minecraft_version,
+        )?,
         "javaArgs": default_client_java_args()
     });
 
@@ -2012,6 +2118,7 @@ fn profile_summary(
         pack_name: manifest.pack_name.clone(),
         version: manifest.version.clone(),
         minecraft_version: manifest.minecraft_version.clone(),
+        loader_type: manifest.loader.loader_type.clone(),
         loader_version: manifest.loader.version.clone(),
         server: format!("{}:{}", manifest.server.address, manifest.server.port),
         profile_dir: profile_dir.to_string_lossy().to_string(),
@@ -2112,8 +2219,33 @@ fn minecraft_profile_id(manifest: &PackManifest) -> String {
     format!("ruuudy-{}", manifest.pack_id)
 }
 
-fn fabric_version_id(loader_version: &str, minecraft_version: &str) -> String {
-    format!("fabric-loader-{loader_version}-{minecraft_version}")
+fn loader_version_id(
+    loader_type: &str,
+    loader_version: &str,
+    minecraft_version: &str,
+) -> LauncherResult<String> {
+    let loader_type = normalize_loader_type(loader_type)?;
+    let loader_version = loader_version.trim();
+    let minecraft_version = minecraft_version.trim();
+    match loader_type.as_str() {
+        "vanilla" => Ok(minecraft_version.to_string()),
+        "fabric" => Ok(format!(
+            "fabric-loader-{loader_version}-{minecraft_version}"
+        )),
+        "forge" => Ok(format!("{minecraft_version}-forge-{loader_version}")),
+        "neoforge" => Ok(format!("neoforge-{loader_version}")),
+        _ => unreachable!("normalize_loader_type guards supported loaders"),
+    }
+}
+
+fn loader_display_name(loader: &Loader) -> &'static str {
+    match loader.loader_type.as_str() {
+        "vanilla" => "Vanilla",
+        "fabric" => "Fabric",
+        "forge" => "Forge",
+        "neoforge" => "NeoForge",
+        _ => "Modded",
+    }
 }
 
 fn iso_timestamp() -> String {
@@ -2152,7 +2284,7 @@ fn read_zip_text<R: Read + std::io::Seek>(
     Ok(text)
 }
 
-fn curseforge_loader_version(manifest: &CurseForgeManifest) -> LauncherResult<String> {
+fn curseforge_loader(manifest: &CurseForgeManifest) -> LauncherResult<Loader> {
     let loader = manifest
         .minecraft
         .mod_loaders
@@ -2161,16 +2293,25 @@ fn curseforge_loader_version(manifest: &CurseForgeManifest) -> LauncherResult<St
         .or_else(|| manifest.minecraft.mod_loaders.first())
         .ok_or_else(|| LauncherError::Message("CurseForge zip has no mod loader.".to_string()))?;
     let loader_id = loader.id.trim();
-    for prefix in ["fabric-loader-", "fabric-"] {
-        if let Some(version) = loader_id.strip_prefix(prefix) {
-            if !version.trim().is_empty() {
-                return Ok(version.to_string());
+    for (loader_type, prefixes) in [
+        ("fabric", &["fabric-loader-", "fabric-"][..]),
+        ("forge", &["forge-"][..]),
+        ("neoforge", &["neoforge-", "neo-forge-"][..]),
+    ] {
+        for prefix in prefixes {
+            if let Some(version) = loader_id.strip_prefix(prefix) {
+                if !version.trim().is_empty() {
+                    return Ok(Loader {
+                        loader_type: loader_type.to_string(),
+                        version: version.to_string(),
+                    });
+                }
             }
         }
     }
 
     Err(LauncherError::Message(format!(
-        "This launcher can import Fabric CurseForge zips for any Minecraft version, but this zip uses '{}' as its loader.",
+        "This launcher supports Vanilla, Fabric, Forge, and NeoForge packs, but this zip uses '{}' as its loader.",
         loader.id
     )))
 }
@@ -2546,7 +2687,9 @@ mod tests {
             },
         };
 
-        assert_eq!(curseforge_loader_version(&manifest).unwrap(), "0.19.2");
+        let loader = curseforge_loader(&manifest).unwrap();
+        assert_eq!(loader.loader_type, "fabric");
+        assert_eq!(loader.version, "0.19.2");
     }
 
     #[test]
@@ -2564,11 +2707,13 @@ mod tests {
             },
         };
 
-        assert_eq!(curseforge_loader_version(&manifest).unwrap(), "0.20.0");
+        let loader = curseforge_loader(&manifest).unwrap();
+        assert_eq!(loader.loader_type, "fabric");
+        assert_eq!(loader.version, "0.20.0");
     }
 
     #[test]
-    fn rejects_non_fabric_curseforge_exports() {
+    fn extracts_forge_loader_from_curseforge_manifest() {
         let manifest = CurseForgeManifest {
             name: "Forge Pack".to_string(),
             overrides: None,
@@ -2582,7 +2727,51 @@ mod tests {
             },
         };
 
-        assert!(curseforge_loader_version(&manifest).is_err());
+        let loader = curseforge_loader(&manifest).unwrap();
+
+        assert_eq!(loader.loader_type, "forge");
+        assert_eq!(loader.version, "52.0.0");
+    }
+
+    #[test]
+    fn extracts_neoforge_loader_from_curseforge_manifest() {
+        let manifest = CurseForgeManifest {
+            name: "NeoForge Pack".to_string(),
+            overrides: None,
+            files: Vec::new(),
+            minecraft: CurseForgeMinecraft {
+                version: "1.21.1".to_string(),
+                mod_loaders: vec![CurseForgeModLoader {
+                    id: "neoforge-21.1.200".to_string(),
+                    primary: true,
+                }],
+            },
+        };
+
+        let loader = curseforge_loader(&manifest).unwrap();
+
+        assert_eq!(loader.loader_type, "neoforge");
+        assert_eq!(loader.version, "21.1.200");
+    }
+
+    #[test]
+    fn creates_loader_specific_launcher_version_ids() {
+        assert_eq!(
+            loader_version_id("fabric", "0.19.2", "1.21.1").unwrap(),
+            "fabric-loader-0.19.2-1.21.1"
+        );
+        assert_eq!(
+            loader_version_id("forge", "52.0.0", "1.21.1").unwrap(),
+            "1.21.1-forge-52.0.0"
+        );
+        assert_eq!(
+            loader_version_id("neoforge", "21.1.200", "1.21.1").unwrap(),
+            "neoforge-21.1.200"
+        );
+        assert_eq!(
+            loader_version_id("vanilla", "", "1.21.1").unwrap(),
+            "1.21.1"
+        );
     }
 
     #[test]

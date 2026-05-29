@@ -206,8 +206,13 @@ function validateManifest(manifest) {
     }
   }
 
-  if (manifest.loader?.type !== "fabric" || typeof manifest.loader?.version !== "string") {
-    throw httpError(400, "Only Fabric manifests are supported.");
+  const supportedLoaders = new Set(["vanilla", "fabric", "forge", "neoforge"]);
+  if (!supportedLoaders.has(manifest.loader?.type) || typeof manifest.loader?.version !== "string") {
+    throw httpError(400, "Loader must be Vanilla, Fabric, Forge, or NeoForge.");
+  }
+
+  if (manifest.loader.type !== "vanilla" && manifest.loader.version.trim() === "") {
+    throw httpError(400, `${manifest.loader.type} loader version is required.`);
   }
 
   if (!Array.isArray(manifest.files) || !Array.isArray(manifest.overrides)) {

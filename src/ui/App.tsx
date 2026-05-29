@@ -20,7 +20,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { ManifestFile, ManifestOverride, PackManifest } from "../core/manifest";
+import type { LoaderType, ManifestFile, ManifestOverride, PackManifest } from "../core/manifest";
 import { formatUpdateStatus, type UpdateStatus } from "../core/updater";
 
 type InstallStatus = {
@@ -46,6 +46,7 @@ type CurseForgeImportSummary = {
   packName: string;
   profileDir: string;
   minecraftVersion: string;
+  loaderType: LoaderType;
   loaderVersion: string;
   curseforgeMods: number;
   overrides: number;
@@ -58,6 +59,7 @@ type ProfileSummary = {
   packName: string;
   version: string;
   minecraftVersion: string;
+  loaderType: LoaderType;
   loaderVersion: string;
   server: string;
   profileDir: string;
@@ -96,6 +98,16 @@ type ProgressEvent = {
 type ViewState = "lookup" | "ready" | "working" | "done";
 type ProfileTab = "overview" | "mods";
 
+type ManualProfileForm = {
+  code: string;
+  packName: string;
+  minecraftVersion: string;
+  loaderType: LoaderType;
+  loaderVersion: string;
+  serverAddress: string;
+  serverPort: string;
+};
+
 type ManagedMod =
   | {
       kind: "file";
@@ -121,6 +133,16 @@ export function App() {
   const [quickCode, setQuickCode] = useState("");
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ruuudy-admin-token") ?? "");
   const [adminOpen, setAdminOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualProfile, setManualProfile] = useState<ManualProfileForm>({
+    code: "",
+    packName: "",
+    minecraftVersion: "1.21.1",
+    loaderType: "fabric",
+    loaderVersion: "0.19.2",
+    serverAddress: "mc.ruuudy.in",
+    serverPort: "25565"
+  });
   const [manifest, setManifest] = useState<PackManifest | null>(null);
   const [status, setStatus] = useState<InstallStatus | null>(null);
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
@@ -352,6 +374,34 @@ export function App() {
     } catch (err) {
       setError(String(err));
       setView(manifest ? "ready" : "lookup");
+    }
+  }
+
+  async function createManualProfile() {
+    setError(null);
+    setProgress(null);
+    setSummary(null);
+    setImportSummary(null);
+    try {
+      const created = await invoke<ProfileSummary>("create_blank_profile", {
+        input: {
+          code: manualProfile.code,
+          packName: manualProfile.packName,
+          minecraftVersion: manualProfile.minecraftVersion,
+          loaderType: manualProfile.loaderType,
+          loaderVersion: manualProfile.loaderType === "vanilla" ? "" : manualProfile.loaderVersion,
+          serverAddress: manualProfile.serverAddress,
+          serverPort: Number(manualProfile.serverPort)
+        }
+      });
+      const pack = await invoke<PackManifest>("lookup_pack", { code: created.code });
+      await loadManifest(created.code, pack);
+      await refreshProfiles();
+      setManualOpen(false);
+      setActiveTab("overview");
+      setView("ready");
+    } catch (err) {
+      setError(String(err));
     }
   }
 
@@ -670,6 +720,10 @@ export function App() {
           <Upload size={18} />
           Import CurseForge zip
         </button>
+        <button className="nav-button" onClick={() => setManualOpen((open) => !open)}>
+          <Plus size={18} />
+          Create Empty Pack
+        </button>
         <button className="nav-button" onClick={() => setAdminOpen((open) => !open)}>
           <Settings size={18} />
           Admin
@@ -750,6 +804,94 @@ export function App() {
                 Load
               </button>
             </div>
+            {manualOpen && (
+              <div className="manual-panel">
+                <label>
+                  <span>Code</span>
+                  <input
+                    value={manualProfile.code}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({ ...profile, code: event.target.value.toUpperCase() }))
+                    }
+                    placeholder="JUNFEET"
+                  />
+                </label>
+                <label>
+                  <span>Pack name</span>
+                  <input
+                    value={manualProfile.packName}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({ ...profile, packName: event.target.value }))
+                    }
+                    placeholder="fakersbob"
+                  />
+                </label>
+                <label>
+                  <span>Minecraft</span>
+                  <input
+                    value={manualProfile.minecraftVersion}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({ ...profile, minecraftVersion: event.target.value }))
+                    }
+                    placeholder="1.21.1"
+                  />
+                </label>
+                <label>
+                  <span>Loader</span>
+                  <select
+                    value={manualProfile.loaderType}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({
+                        ...profile,
+                        loaderType: event.target.value as LoaderType,
+                        loaderVersion: event.target.value === "vanilla" ? "" : profile.loaderVersion
+                      }))
+                    }
+                  >
+                    <option value="fabric">Fabric</option>
+                    <option value="forge">Forge</option>
+                    <option value="neoforge">NeoForge</option>
+                    <option value="vanilla">Vanilla</option>
+                  </select>
+                </label>
+                {manualProfile.loaderType !== "vanilla" && (
+                  <label>
+                    <span>Loader version</span>
+                    <input
+                      value={manualProfile.loaderVersion}
+                      onChange={(event) =>
+                        setManualProfile((profile) => ({ ...profile, loaderVersion: event.target.value }))
+                      }
+                      placeholder={manualProfile.loaderType === "forge" ? "52.0.0" : "0.19.2"}
+                    />
+                  </label>
+                )}
+                <label>
+                  <span>Server</span>
+                  <input
+                    value={manualProfile.serverAddress}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({ ...profile, serverAddress: event.target.value }))
+                    }
+                    placeholder="mc.ruuudy.in"
+                  />
+                </label>
+                <label>
+                  <span>Port</span>
+                  <input
+                    value={manualProfile.serverPort}
+                    onChange={(event) =>
+                      setManualProfile((profile) => ({ ...profile, serverPort: event.target.value }))
+                    }
+                    placeholder="25565"
+                  />
+                </label>
+                <button className="primary-button" onClick={() => void createManualProfile()}>
+                  <Plus size={18} />
+                  Create Pack
+                </button>
+              </div>
+            )}
           </section>
         )}
 
@@ -776,7 +918,7 @@ export function App() {
               <>
                 <div className="stats-grid">
                   <Stat label="Minecraft" value={manifest.minecraftVersion} />
-                  <Stat label="Loader" value={`Fabric ${manifest.loader.version}`} />
+                  <Stat label="Loader" value={formatLoader(manifest.loader.type, manifest.loader.version)} />
                   <Stat label="Latest" value={manifest.version} />
                   <Stat label="Installed" value={status?.installedVersion ?? "Not installed"} />
                 </div>
@@ -942,7 +1084,8 @@ export function App() {
               )}
               {importSummary && (
                 <p>
-                  Created code <strong>{importSummary.code}</strong>, locked{" "}
+                  Created code <strong>{importSummary.code}</strong> for{" "}
+                  {formatLoader(importSummary.loaderType, importSummary.loaderVersion)}, locked{" "}
                   {importSummary.curseforgeMods} CurseForge mods with SHA-256, and imported{" "}
                   {importSummary.overrides} override files.
                 </p>
@@ -970,6 +1113,16 @@ function Stat({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function formatLoader(loaderType: LoaderType, loaderVersion: string): string {
+  const name = {
+    vanilla: "Vanilla",
+    fabric: "Fabric",
+    forge: "Forge",
+    neoforge: "NeoForge"
+  }[loaderType];
+  return loaderType === "vanilla" ? name : `${name} ${loaderVersion}`;
 }
 
 function displayFileModName(file: ManifestFile): string {

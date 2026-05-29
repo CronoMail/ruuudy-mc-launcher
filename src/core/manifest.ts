@@ -1,4 +1,4 @@
-export type LoaderType = "fabric";
+export type LoaderType = "vanilla" | "fabric" | "forge" | "neoforge";
 export type FileSide = "client" | "server" | "both";
 
 export type PackManifest = {
@@ -118,6 +118,14 @@ export function buildInstallPlan(
 function validateManifest(manifest: PackManifest): void {
   if (manifest.schemaVersion !== 1) {
     throw new Error(`Unsupported manifest schema ${manifest.schemaVersion}.`);
+  }
+
+  if (!["vanilla", "fabric", "forge", "neoforge"].includes(manifest.loader.type)) {
+    throw new Error("Manifest loader must be Vanilla, Fabric, Forge, or NeoForge.");
+  }
+
+  if (manifest.loader.type !== "vanilla" && manifest.loader.version.trim() === "") {
+    throw new Error(`${manifest.loader.type} loader version is required.`);
   }
 
   for (const file of manifest.files) {
