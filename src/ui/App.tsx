@@ -118,6 +118,7 @@ const DEFAULT_API_BASE = "https://launcher.ruuudy.in";
 export function App() {
   const apiBase = DEFAULT_API_BASE;
   const [code, setCode] = useState(DEFAULT_CODE);
+  const [quickCode, setQuickCode] = useState("");
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ruuudy-admin-token") ?? "");
   const [adminOpen, setAdminOpen] = useState(false);
   const [manifest, setManifest] = useState<PackManifest | null>(null);
@@ -212,6 +213,16 @@ export function App() {
       setError(String(err));
       setView("lookup");
     }
+  }
+
+  async function lookupQuickCode() {
+    const nextCode = quickCode.trim();
+    if (!nextCode) {
+      setView("lookup");
+      return;
+    }
+    await lookupPack(nextCode);
+    setQuickCode("");
   }
 
   async function loadManifest(nextCode: string, pack: PackManifest) {
@@ -626,6 +637,23 @@ export function App() {
           <PackageOpen size={18} />
           Pack
         </button>
+        <div className="quick-code-box">
+          <label>
+            <span>Enter code</span>
+            <input
+              value={quickCode}
+              onChange={(event) => setQuickCode(event.target.value.toUpperCase())}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void lookupQuickCode();
+              }}
+              placeholder="JUNFEET"
+            />
+          </label>
+          <button className="secondary-button" onClick={() => void lookupQuickCode()}>
+            <RefreshCcw size={16} />
+            Load Code
+          </button>
+        </div>
         <div className="profile-list">
           {profiles.map((profile) => (
             <button

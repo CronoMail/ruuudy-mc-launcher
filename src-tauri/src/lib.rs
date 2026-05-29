@@ -488,9 +488,13 @@ fn import_curseforge_zip_blocking(
     })?;
     let manifest_text = read_zip_text(&mut archive, "manifest.json")?;
     let curseforge: CurseForgeManifest = serde_json::from_str(&manifest_text)?;
-    let loader_version = curseforge_loader_version(&curseforge)?;
-    let pack_id = slugify_pack_id(&curseforge.name);
     let code = unique_share_code(&share_code_from_pack_name(&curseforge.name))?;
+    let loader_version = curseforge_loader_version(&curseforge)?;
+    let pack_id = unique_pack_id(&format!(
+        "{}-{}",
+        slugify_pack_id(&curseforge.name),
+        code.to_lowercase()
+    ))?;
     let pack_name = if curseforge.name.trim().is_empty() {
         "Imported Pack".to_string()
     } else {
@@ -2046,7 +2050,7 @@ fn upsert_registry_profile(profile: RegistryProfile) -> LauncherResult<()> {
     let mut registry = read_registry()?;
     registry
         .profiles
-        .retain(|existing| existing.code != profile.code && existing.pack_id != profile.pack_id);
+        .retain(|existing| existing.code != profile.code);
     registry.profiles.push(profile);
     write_registry(&registry)
 }
@@ -2156,13 +2160,19 @@ fn curseforge_loader_version(manifest: &CurseForgeManifest) -> LauncherResult<St
         .find(|loader| loader.primary)
         .or_else(|| manifest.minecraft.mod_loaders.first())
         .ok_or_else(|| LauncherError::Message("CurseForge zip has no mod loader.".to_string()))?;
-    loader
-        .id
-        .strip_prefix("fabric-")
-        .map(|version| version.to_string())
-        .ok_or_else(|| {
-            LauncherError::Message("Only Fabric CurseForge zips are supported.".to_string())
-        })
+    let loader_id = loader.id.trim();
+    for prefix in ["fabric-loader-", "fabric-"] {
+        if let Some(version) = loader_id.strip_prefix(prefix) {
+            if !version.trim().is_empty() {
+                return Ok(version.to_string());
+            }
+        }
+    }
+
+    Err(LauncherError::Message(format!(
+        "This launcher can import Fabric CurseForge zips for any Minecraft version, but this zip uses '{}' as its loader.",
+        loader.id
+    )))
 }
 
 fn slugify_pack_id(name: &str) -> String {
@@ -2182,6 +2192,30 @@ fn slugify_pack_id(name: &str) -> String {
     } else {
         slug
     }
+}
+
+fn unique_pack_id(base: &str) -> LauncherResult<String> {
+    let registry = read_registry()?;
+    let existing: BTreeSet<String> = registry
+        .profiles
+        .into_iter()
+        .map(|profile| profile.pack_id)
+        .collect();
+    let base = slugify_pack_id(base);
+    if !existing.contains(&base) {
+        return Ok(base);
+    }
+
+    for index in 2..1000 {
+        let candidate = format!("{base}-{index}");
+        if !existing.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(LauncherError::Message(
+        "Could not generate a unique local profile id.".to_string(),
+    ))
 }
 
 fn share_code_from_pack_name(name: &str) -> String {
@@ -2513,6 +2547,24 @@ mod tests {
         };
 
         assert_eq!(curseforge_loader_version(&manifest).unwrap(), "0.19.2");
+    }
+
+    #[test]
+    fn accepts_fabric_loader_prefix_from_curseforge_manifest() {
+        let manifest = CurseForgeManifest {
+            name: "Future Fabric Pack".to_string(),
+            overrides: Some("overrides".to_string()),
+            files: Vec::new(),
+            minecraft: CurseForgeMinecraft {
+                version: "1.22".to_string(),
+                mod_loaders: vec![CurseForgeModLoader {
+                    id: "fabric-loader-0.20.0".to_string(),
+                    primary: true,
+                }],
+            },
+        };
+
+        assert_eq!(curseforge_loader_version(&manifest).unwrap(), "0.20.0");
     }
 
     #[test]

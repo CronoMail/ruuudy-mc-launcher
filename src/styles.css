@@ -218,6 +218,27 @@ input:focus {
   margin: 0.25rem 0 0.85rem;
 }
 
+.quick-code-box {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0.2rem 0 0.85rem;
+  padding: 0.7rem;
+  background: #111112;
+}
+
+.quick-code-box label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.quick-code-box span {
+  color: var(--faint);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 .profile-button {
   display: grid;
   justify-content: stretch;
