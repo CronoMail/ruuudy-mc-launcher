@@ -1965,7 +1965,9 @@ fn safe_relative_path(path: &str) -> LauncherResult<PathBuf> {
 fn install_loader_profile(client: &Client, manifest: &PackManifest) -> LauncherResult<()> {
     match manifest.loader.loader_type.as_str() {
         "fabric" => install_fabric_profile(client, manifest),
-        "vanilla" | "forge" | "neoforge" => Ok(()),
+        "forge" => install_forge_profile(client, manifest),
+        "neoforge" => install_neoforge_profile(client, manifest),
+        "vanilla" => Ok(()),
         loader => Err(LauncherError::Message(format!(
             "Unsupported loader '{}'.",
             loader
@@ -1997,6 +1999,144 @@ fn install_fabric_profile(client: &Client, manifest: &PackManifest) -> LauncherR
         .text()?;
     fs::write(version_json, profile_json)?;
     Ok(())
+}
+
+fn install_forge_profile(client: &Client, manifest: &PackManifest) -> LauncherResult<()> {
+    install_java_mod_loader_profile(
+        client,
+        manifest,
+        &forge_installer_url(&manifest.minecraft_version, &manifest.loader.version),
+    )
+}
+
+fn install_neoforge_profile(client: &Client, manifest: &PackManifest) -> LauncherResult<()> {
+    let candidates = neoforge_installer_urls(&manifest.minecraft_version, &manifest.loader.version);
+    let mut last_error = None;
+    for url in candidates {
+        match install_java_mod_loader_profile(client, manifest, &url) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+    Err(LauncherError::Message(format!(
+        "Could not install NeoForge {} for Minecraft {}. {}",
+        manifest.loader.version,
+        manifest.minecraft_version,
+        last_error.unwrap_or_else(|| "No installer URL was available.".to_string())
+    )))
+}
+
+fn install_java_mod_loader_profile(
+    client: &Client,
+    manifest: &PackManifest,
+    installer_url: &str,
+) -> LauncherResult<()> {
+    let minecraft_dir = minecraft_dir()?;
+    let version_id = loader_version_id(
+        &manifest.loader.loader_type,
+        &manifest.loader.version,
+        &manifest.minecraft_version,
+    )?;
+    let version_json = minecraft_dir
+        .join("versions")
+        .join(&version_id)
+        .join(format!("{version_id}.json"));
+    if version_json.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&minecraft_dir)?;
+    let installer_dir = std::env::temp_dir().join(format!(
+        "ruuudy-mc-loader-installer-{}-{}",
+        std::process::id(),
+        unix_timestamp()
+    ));
+    fs::create_dir_all(&installer_dir)?;
+    let installer_path = installer_dir.join("installer.jar");
+
+    let install_result = (|| -> LauncherResult<()> {
+        let bytes = client
+            .get(installer_url)
+            .send()?
+            .error_for_status()?
+            .bytes()?;
+        fs::write(&installer_path, bytes.as_ref())?;
+
+        let mut last_error = None;
+        for attempt in 1..=2 {
+            match run_java_mod_loader_installer(&installer_path, &minecraft_dir) {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt == 1 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(LauncherError::Message(format!(
+                "Mod loader installer failed for {}. {}",
+                installer_url, error
+            )));
+        }
+        if !version_json.exists() {
+            return Err(LauncherError::Message(format!(
+                "Mod loader installer finished, but {} was not created.",
+                version_json.display()
+            )));
+        }
+        Ok(())
+    })();
+
+    let _ = fs::remove_dir_all(&installer_dir);
+    install_result
+}
+
+fn run_java_mod_loader_installer(
+    installer_path: &Path,
+    minecraft_dir: &Path,
+) -> LauncherResult<()> {
+    let output = Command::new("java")
+        .arg("-jar")
+        .arg(installer_path)
+        .arg("--installClient")
+        .current_dir(minecraft_dir)
+        .output()
+        .map_err(|error| {
+            LauncherError::Message(format!(
+                "Could not run the Java mod loader installer. Install Java 17+ or add java.exe to PATH, then import again. {error}"
+            ))
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(LauncherError::Message(format!(
+        "stdout: {} stderr: {}",
+        truncate_installer_output(String::from_utf8_lossy(&output.stdout).trim()),
+        truncate_installer_output(String::from_utf8_lossy(&output.stderr).trim())
+    )))
+}
+
+fn truncate_installer_output(output: &str) -> String {
+    const MAX_CHARS: usize = 4000;
+    if output.chars().count() <= MAX_CHARS {
+        return output.to_string();
+    }
+
+    let tail = output
+        .chars()
+        .rev()
+        .take(MAX_CHARS)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("...{tail}")
 }
 
 fn upsert_official_launcher_profile(
@@ -2236,6 +2376,26 @@ fn loader_version_id(
         "neoforge" => Ok(format!("neoforge-{loader_version}")),
         _ => unreachable!("normalize_loader_type guards supported loaders"),
     }
+}
+
+fn forge_installer_url(minecraft_version: &str, loader_version: &str) -> String {
+    let forge_version = format!("{}-{}", minecraft_version.trim(), loader_version.trim());
+    format!(
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/{forge_version}/forge-{forge_version}-installer.jar"
+    )
+}
+
+fn neoforge_installer_urls(minecraft_version: &str, loader_version: &str) -> Vec<String> {
+    let minecraft_version = minecraft_version.trim();
+    let loader_version = loader_version.trim();
+    let modern = format!(
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-installer.jar"
+    );
+    let legacy_version = format!("{minecraft_version}-{loader_version}");
+    let legacy = format!(
+        "https://maven.neoforged.net/releases/net/neoforged/forge/{legacy_version}/forge-{legacy_version}-installer.jar"
+    );
+    vec![modern, legacy]
 }
 
 fn loader_display_name(loader: &Loader) -> &'static str {
@@ -2771,6 +2931,25 @@ mod tests {
         assert_eq!(
             loader_version_id("vanilla", "", "1.21.1").unwrap(),
             "1.21.1"
+        );
+    }
+
+    #[test]
+    fn creates_forge_installer_url() {
+        assert_eq!(
+            forge_installer_url("1.20.1", "47.4.4"),
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/1.20.1-47.4.4/forge-1.20.1-47.4.4-installer.jar"
+        );
+    }
+
+    #[test]
+    fn creates_neoforge_installer_url_candidates() {
+        assert_eq!(
+            neoforge_installer_urls("1.21.1", "21.1.200"),
+            vec![
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.200/neoforge-21.1.200-installer.jar".to_string(),
+                "https://maven.neoforged.net/releases/net/neoforged/forge/1.21.1-21.1.200/forge-1.21.1-21.1.200-installer.jar".to_string()
+            ]
         );
     }
 
