@@ -110,6 +110,11 @@ select:focus {
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: 100vh;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   padding: 1rem;
   background: rgba(10, 10, 11, 0.94);
@@ -782,6 +787,9 @@ select:focus {
   }
 
   .sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
