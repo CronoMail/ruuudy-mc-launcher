@@ -148,6 +148,44 @@ struct CurseForgeImportSummary {
     minecraft_profile_id: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurseForgeZipPreview {
+    zip_path: String,
+    pack_name: String,
+    minecraft_version: String,
+    loader_type: String,
+    loader_version: String,
+    required_mods: usize,
+    optional_mods: usize,
+    override_files: usize,
+    override_mod_jars: usize,
+    resource_packs: usize,
+    total_override_size: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackHealthSummary {
+    ok: bool,
+    recommended_action: String,
+    issues: Vec<PackHealthIssue>,
+    total_ram_gib: f64,
+    suggested_ram_gib: u64,
+    java_args: String,
+    expected_files: usize,
+    missing_files: usize,
+    size_mismatches: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackHealthIssue {
+    severity: String,
+    title: String,
+    detail: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct LauncherRegistry {
@@ -381,6 +419,147 @@ fn get_install_status(manifest: PackManifest) -> LauncherResult<InstallStatus> {
 }
 
 #[tauri::command]
+fn get_pack_health(manifest: PackManifest) -> LauncherResult<PackHealthSummary> {
+    validate_manifest(&manifest)?;
+    let profile_dir = profile_dir(&manifest)?;
+    let state = read_install_state(&profile_dir)?;
+    let plan = build_install_plan(&manifest, state.as_ref());
+    let expected_files = plan.next_managed_files.len();
+    let mut issues = Vec::new();
+    let mut missing_files = 0;
+    let mut size_mismatches = 0;
+
+    if !profile_dir.exists() {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Profile folder missing".to_string(),
+            detail: profile_dir.to_string_lossy().to_string(),
+        });
+    }
+
+    if state
+        .as_ref()
+        .is_none_or(|state| state.manifest_version != manifest.version)
+    {
+        issues.push(PackHealthIssue {
+            severity: "warning".to_string(),
+            title: "Pack needs update".to_string(),
+            detail: format!(
+                "Installed {} but latest is {}.",
+                state
+                    .as_ref()
+                    .map(|state| state.manifest_version.as_str())
+                    .unwrap_or("nothing"),
+                manifest.version
+            ),
+        });
+    }
+
+    for item in [
+        manifest
+            .files
+            .iter()
+            .map(file_to_download)
+            .collect::<Vec<_>>(),
+        manifest
+            .overrides
+            .iter()
+            .map(override_to_download)
+            .collect(),
+    ]
+    .concat()
+    {
+        let target = profile_dir.join(safe_relative_path(&item.relative_path)?);
+        if !target.exists() {
+            missing_files += 1;
+            issues.push(PackHealthIssue {
+                severity: "error".to_string(),
+                title: "Missing managed file".to_string(),
+                detail: item.relative_path,
+            });
+            continue;
+        }
+
+        if let Some(expected_size) = item.size {
+            let actual_size = fs::metadata(&target)?.len();
+            if actual_size != expected_size {
+                size_mismatches += 1;
+                issues.push(PackHealthIssue {
+                    severity: "error".to_string(),
+                    title: "Managed file size changed".to_string(),
+                    detail: format!(
+                        "{} expected {} bytes but found {} bytes.",
+                        item.relative_path, expected_size, actual_size
+                    ),
+                });
+            }
+        }
+    }
+
+    let version_id = loader_version_id(
+        &manifest.loader.loader_type,
+        &manifest.loader.version,
+        &manifest.minecraft_version,
+    )?;
+    let version_json = minecraft_dir()?
+        .join("versions")
+        .join(&version_id)
+        .join(format!("{version_id}.json"));
+    if !version_json.exists() {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Minecraft loader profile missing".to_string(),
+            detail: format!("{} is not installed in the official launcher.", version_id),
+        });
+    }
+
+    check_official_launcher_profile(&manifest, &profile_dir, &version_id, &mut issues)?;
+
+    if matches!(manifest.loader.loader_type.as_str(), "forge" | "neoforge")
+        && !version_json.exists()
+        && !java_available()
+    {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Java not available for loader install".to_string(),
+            detail: "Install Java 17+ or add java.exe to PATH, then run Install/Repair again."
+                .to_string(),
+        });
+    }
+
+    let (total_ram_gib, suggested_ram_gib) = recommended_client_ram();
+    let has_errors = issues.iter().any(|issue| issue.severity == "error");
+    let recommended_action = if state.is_none() {
+        "install"
+    } else if state
+        .as_ref()
+        .is_some_and(|state| state.manifest_version != manifest.version)
+    {
+        "update"
+    } else if has_errors {
+        "repair"
+    } else {
+        "play"
+    }
+    .to_string();
+
+    Ok(PackHealthSummary {
+        ok: !has_errors
+            && state
+                .as_ref()
+                .is_some_and(|state| state.manifest_version == manifest.version),
+        recommended_action,
+        issues,
+        total_ram_gib,
+        suggested_ram_gib,
+        java_args: default_client_java_args(),
+        expected_files,
+        missing_files,
+        size_mismatches,
+    })
+}
+
+#[tauri::command]
 async fn install_pack(app: AppHandle, manifest: PackManifest) -> LauncherResult<InstallSummary> {
     tauri::async_runtime::spawn_blocking(move || install_pack_blocking(app, manifest, None))
         .await
@@ -482,6 +661,76 @@ async fn import_curseforge_zip(
     tauri::async_runtime::spawn_blocking(move || import_curseforge_zip_blocking(app, zip_path))
         .await
         .map_err(|error| LauncherError::Message(format!("Import worker failed: {error}")))?
+}
+
+#[tauri::command]
+fn inspect_curseforge_zip(zip_path: String) -> LauncherResult<CurseForgeZipPreview> {
+    let zip_path_buf = PathBuf::from(&zip_path);
+    if !zip_path_buf.exists() {
+        return Err(LauncherError::Message(format!(
+            "Zip file does not exist: {}",
+            zip_path_buf.display()
+        )));
+    }
+
+    let file = fs::File::open(&zip_path_buf)?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        LauncherError::Message(format!("Could not read CurseForge zip: {error}"))
+    })?;
+    let manifest_text = read_zip_text(&mut archive, "manifest.json")?;
+    let curseforge: CurseForgeManifest = serde_json::from_str(&manifest_text)?;
+    let loader = curseforge_loader(&curseforge)?;
+    let required_mods = curseforge.files.iter().filter(|file| file.required).count();
+    let optional_mods = curseforge.files.len().saturating_sub(required_mods);
+    let overrides_root = curseforge
+        .overrides
+        .as_deref()
+        .unwrap_or("overrides")
+        .trim_matches('/');
+    let mut override_files = 0;
+    let mut override_mod_jars = 0;
+    let mut resource_packs = 0;
+    let mut total_override_size = 0;
+
+    for index in 0..archive.len() {
+        let file = archive.by_index(index).map_err(|error| {
+            LauncherError::Message(format!("Could not read zip entry {index}: {error}"))
+        })?;
+        if !file.is_file() {
+            continue;
+        }
+        let name = file.name().replace('\\', "/");
+        let Some(relative) = name.strip_prefix(&format!("{overrides_root}/")) else {
+            continue;
+        };
+        override_files += 1;
+        total_override_size += file.size();
+        let normalized = relative.to_lowercase();
+        if normalized.starts_with("mods/") && normalized.ends_with(".jar") {
+            override_mod_jars += 1;
+        }
+        if normalized.starts_with("resourcepacks/") && normalized.ends_with(".zip") {
+            resource_packs += 1;
+        }
+    }
+
+    Ok(CurseForgeZipPreview {
+        zip_path,
+        pack_name: if curseforge.name.trim().is_empty() {
+            "Imported Pack".to_string()
+        } else {
+            curseforge.name.trim().to_string()
+        },
+        minecraft_version: curseforge.minecraft.version,
+        loader_type: loader.loader_type,
+        loader_version: loader.version,
+        required_mods,
+        optional_mods,
+        override_files,
+        override_mod_jars,
+        resource_packs,
+        total_override_size,
+    })
 }
 
 fn import_curseforge_zip_blocking(
@@ -1298,8 +1547,10 @@ pub fn run() {
             lookup_remote_pack,
             list_profiles,
             get_install_status,
+            get_pack_health,
             install_pack,
             install_profile_pack,
+            inspect_curseforge_zip,
             import_curseforge_zip,
             delete_profile,
             export_profile_manifest,
@@ -2188,7 +2439,77 @@ fn upsert_official_launcher_profile(
     Ok(())
 }
 
+fn check_official_launcher_profile(
+    manifest: &PackManifest,
+    profile_dir: &Path,
+    version_id: &str,
+    issues: &mut Vec<PackHealthIssue>,
+) -> LauncherResult<()> {
+    let launcher_profiles = minecraft_dir()?.join("launcher_profiles.json");
+    if !launcher_profiles.exists() {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Minecraft launcher profile missing".to_string(),
+            detail: "The official Minecraft Launcher has no launcher_profiles.json yet."
+                .to_string(),
+        });
+        return Ok(());
+    }
+
+    let root: serde_json::Value = serde_json::from_str(&fs::read_to_string(&launcher_profiles)?)?;
+    let profile_id = minecraft_profile_id(manifest);
+    let Some(profile) = root
+        .get("profiles")
+        .and_then(|profiles| profiles.get(&profile_id))
+    else {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Minecraft launcher profile missing".to_string(),
+            detail: format!("{profile_id} is not in launcher_profiles.json."),
+        });
+        return Ok(());
+    };
+
+    if profile
+        .get("lastVersionId")
+        .and_then(|value| value.as_str())
+        != Some(version_id)
+    {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Minecraft launcher profile uses the wrong loader".to_string(),
+            detail: format!("Expected lastVersionId {version_id}."),
+        });
+    }
+
+    if profile.get("gameDir").and_then(|value| value.as_str())
+        != Some(profile_dir.to_string_lossy().as_ref())
+    {
+        issues.push(PackHealthIssue {
+            severity: "error".to_string(),
+            title: "Minecraft launcher profile uses the wrong folder".to_string(),
+            detail: profile_dir.to_string_lossy().to_string(),
+        });
+    }
+
+    let expected_args = default_client_java_args();
+    if profile.get("javaArgs").and_then(|value| value.as_str()) != Some(expected_args.as_str()) {
+        issues.push(PackHealthIssue {
+            severity: "info".to_string(),
+            title: "Smart RAM will apply on next install/repair".to_string(),
+            detail: expected_args,
+        });
+    }
+
+    Ok(())
+}
+
 fn default_client_java_args() -> String {
+    let (_, xmx_gib) = recommended_client_ram();
+    format!("-Xmx{xmx_gib}G -XX:+UseG1GC")
+}
+
+fn recommended_client_ram() -> (f64, u64) {
     let mut system = System::new();
     system.refresh_memory();
 
@@ -2207,7 +2528,19 @@ fn default_client_java_args() -> String {
         3
     };
 
-    format!("-Xmx{xmx_gib}G -XX:+UseG1GC")
+    (round_one_decimal(total_gib), xmx_gib)
+}
+
+fn round_one_decimal(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn java_available() -> bool {
+    Command::new("java")
+        .arg("-version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn remove_official_launcher_profile(manifest: &PackManifest) -> LauncherResult<()> {

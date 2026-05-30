@@ -9,7 +9,9 @@ import {
   Download,
   FolderOpen,
   Gamepad2,
+  AlertTriangle,
   PackageOpen,
+  Play,
   Plus,
   RefreshCcw,
   Search,
@@ -53,6 +55,20 @@ type CurseForgeImportSummary = {
   minecraftProfileId: string;
 };
 
+type CurseForgeZipPreview = {
+  zipPath: string;
+  packName: string;
+  minecraftVersion: string;
+  loaderType: LoaderType;
+  loaderVersion: string;
+  requiredMods: number;
+  optionalMods: number;
+  overrideFiles: number;
+  overrideModJars: number;
+  resourcePacks: number;
+  totalOverrideSize: number;
+};
+
 type ProfileSummary = {
   code: string;
   packId: string;
@@ -78,6 +94,24 @@ type PublishSummary = {
 type FolderSyncSummary = {
   manifest: PackManifest;
   removedFiles: string[];
+};
+
+type PackHealthIssue = {
+  severity: "info" | "warning" | "error";
+  title: string;
+  detail: string;
+};
+
+type PackHealthSummary = {
+  ok: boolean;
+  recommendedAction: "install" | "update" | "repair" | "play";
+  issues: PackHealthIssue[];
+  totalRamGib: number;
+  suggestedRamGib: number;
+  javaArgs: string;
+  expectedFiles: number;
+  missingFiles: number;
+  sizeMismatches: number;
 };
 
 type ModrinthSearchResult = {
@@ -145,10 +179,13 @@ export function App() {
   });
   const [manifest, setManifest] = useState<PackManifest | null>(null);
   const [status, setStatus] = useState<InstallStatus | null>(null);
+  const [health, setHealth] = useState<PackHealthSummary | null>(null);
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [summary, setSummary] = useState<InstallSummary | null>(null);
   const [importSummary, setImportSummary] = useState<CurseForgeImportSummary | null>(null);
+  const [importPreview, setImportPreview] = useState<CurseForgeZipPreview | null>(null);
+  const [pendingImportPath, setPendingImportPath] = useState<string | null>(null);
   const [publishSummary, setPublishSummary] = useState<PublishSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewState>("lookup");
@@ -248,11 +285,13 @@ export function App() {
   }
 
   async function loadManifest(nextCode: string, pack: PackManifest) {
-    const nextStatus = await invoke<InstallStatus>("get_install_status", {
-      manifest: pack
-    });
+    const [nextStatus, nextHealth] = await Promise.all([
+      invoke<InstallStatus>("get_install_status", { manifest: pack }),
+      invoke<PackHealthSummary>("get_pack_health", { manifest: pack })
+    ]);
     setManifest(pack);
     setStatus(nextStatus);
+    setHealth(nextHealth);
     setCode(nextCode);
   }
 
@@ -336,11 +375,8 @@ export function App() {
     try {
       await saveProfile(manifest);
       const result = await invoke<InstallSummary>("install_profile_pack", { code, manifest });
-      const nextStatus = await invoke<InstallStatus>("get_install_status", {
-        manifest
-      });
       setSummary(result);
-      setStatus(nextStatus);
+      await loadManifest(code.trim().toUpperCase(), manifest);
       await refreshProfiles();
       setView("done");
     } catch (err) {
@@ -352,18 +388,37 @@ export function App() {
   async function importCurseForgeZip() {
     setError(null);
     setProgress(null);
+    setImportPreview(null);
+    setPendingImportPath(null);
     const selected = await open({
       multiple: false,
       filters: [{ name: "CurseForge Modpack Zip", extensions: ["zip"] }]
     });
     if (typeof selected !== "string") return;
 
+    try {
+      const preview = await invoke<CurseForgeZipPreview>("inspect_curseforge_zip", {
+        zipPath: selected
+      });
+      setImportPreview(preview);
+      setPendingImportPath(selected);
+      setView("lookup");
+    } catch (err) {
+      setError(String(err));
+      setView(manifest ? "ready" : "lookup");
+    }
+  }
+
+  async function confirmCurseForgeImport() {
+    if (!pendingImportPath) return;
     setView("working");
     setProgress({ stage: "import", message: "Starting CurseForge import", current: 0, total: 1 });
     try {
       const result = await invoke<CurseForgeImportSummary>("import_curseforge_zip", {
-        zipPath: selected
+        zipPath: pendingImportPath
       });
+      setImportPreview(null);
+      setPendingImportPath(null);
       setImportSummary(result);
       setSummary(null);
       const pack = await invoke<PackManifest>("lookup_pack", { code: result.code });
@@ -375,6 +430,11 @@ export function App() {
       setError(String(err));
       setView(manifest ? "ready" : "lookup");
     }
+  }
+
+  function cancelCurseForgeImport() {
+    setImportPreview(null);
+    setPendingImportPath(null);
   }
 
   async function createManualProfile() {
@@ -499,6 +559,7 @@ export function App() {
       await invoke("delete_profile", { code });
       setManifest(null);
       setStatus(null);
+      setHealth(null);
       setSummary(null);
       setImportSummary(null);
       setPublishSummary(null);
@@ -671,6 +732,19 @@ export function App() {
     await navigator.clipboard.writeText(server);
   }
 
+  async function runPrimaryPackAction() {
+    const action = health?.recommendedAction ?? (status?.installed ? "play" : "install");
+    if (action === "play") {
+      await openOfficialLauncher();
+      return;
+    }
+    await installPack();
+  }
+
+  const primaryPackAction = health?.recommendedAction ?? (status?.installed ? "play" : "install");
+  const primaryPackLabel = packActionLabel(primaryPackAction);
+  const primaryPackIcon = primaryPackAction === "play" ? <Play size={18} /> : <Download size={18} />;
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -784,10 +858,10 @@ export function App() {
           <section className="panel hero-panel">
             <div>
               <span className="eyebrow">Install Code</span>
-              <h2>Sync the exact server pack</h2>
+              <h2>Choose a pack</h2>
               <p>
-                Enter a profile code or import your exported CurseForge zip. The launcher creates
-                a separate Minecraft profile and keeps it updated from the shared code.
+                Pick an installed pack, enter a share code, or preview a CurseForge zip before it
+                starts installing.
               </p>
             </div>
             <div className="code-row">
@@ -892,6 +966,58 @@ export function App() {
                 </button>
               </div>
             )}
+            {importPreview && (
+              <div className="import-preview">
+                <div>
+                  <span className="eyebrow">CurseForge Preview</span>
+                  <h3>{importPreview.packName}</h3>
+                  <p>
+                    {importPreview.minecraftVersion} -{" "}
+                    {formatLoader(importPreview.loaderType, importPreview.loaderVersion)}
+                  </p>
+                </div>
+                <div className="preview-grid">
+                  <Stat label="Required mods" value={String(importPreview.requiredMods)} />
+                  <Stat label="Optional mods" value={String(importPreview.optionalMods)} />
+                  <Stat label="Overrides" value={String(importPreview.overrideFiles)} />
+                  <Stat label="Resource packs" value={String(importPreview.resourcePacks)} />
+                  <Stat label="Local mod jars" value={String(importPreview.overrideModJars)} />
+                  <Stat label="Override size" value={formatBytes(importPreview.totalOverrideSize)} />
+                </div>
+                <div className="actions">
+                  <button className="primary-button" onClick={() => void confirmCurseForgeImport()}>
+                    <Download size={18} />
+                    Import This Pack
+                  </button>
+                  <button className="secondary-button" onClick={cancelCurseForgeImport}>
+                    <X size={18} />
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {profiles.length > 0 && (
+              <div className="home-library">
+                <div className="section-title">
+                  <span className="eyebrow">Local packs</span>
+                  <strong>{profiles.length}</strong>
+                </div>
+                <div className="home-pack-grid">
+                  {profiles.map((profile) => (
+                    <button
+                      key={profile.code}
+                      className="home-pack-card"
+                      onClick={() => void lookupPack(profile.code)}
+                    >
+                      <span>{profile.packName}</span>
+                      <small>{profile.code}</small>
+                      <em>{formatLoader(profile.loaderType, profile.loaderVersion)} - {profile.minecraftVersion}</em>
+                      <strong>{profile.installed ? "Ready" : profile.installedVersion ? "Update needed" : "Install needed"}</strong>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -922,6 +1048,42 @@ export function App() {
                   <Stat label="Latest" value={manifest.version} />
                   <Stat label="Installed" value={status?.installedVersion ?? "Not installed"} />
                 </div>
+                {health && (
+                  <div className={health.ok ? "health-panel good" : "health-panel"}>
+                    <div className="health-head">
+                      <div>
+                        <span className="eyebrow">Pack Health</span>
+                        <strong>{health.ok ? "Ready to play" : `${health.issues.length} thing${health.issues.length === 1 ? "" : "s"} to check`}</strong>
+                      </div>
+                      <div className="ram-pill">
+                        <span>{health.totalRamGib} GiB PC</span>
+                        <strong>{health.suggestedRamGib}G client RAM</strong>
+                      </div>
+                    </div>
+                    <div className="health-metrics">
+                      <span>{health.expectedFiles} managed files</span>
+                      <span>{health.missingFiles} missing</span>
+                      <span>{health.sizeMismatches} size mismatches</span>
+                      <span>{health.javaArgs}</span>
+                    </div>
+                    {health.issues.length > 0 && (
+                      <div className="health-issues">
+                        {health.issues.slice(0, 5).map((issue) => (
+                          <div className={`health-issue ${issue.severity}`} key={`${issue.title}-${issue.detail}`}>
+                            <AlertTriangle size={16} />
+                            <div>
+                              <strong>{issue.title}</strong>
+                              <span>{issue.detail}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {health.issues.length > 5 && (
+                          <p className="muted">+{health.issues.length - 5} more issue{health.issues.length - 5 === 1 ? "" : "s"}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="share-panel">
                   <label>
                     <span>Share code</span>
@@ -940,14 +1102,16 @@ export function App() {
                   </button>
                 </div>
                 <div className="actions">
-                  <button className="primary-button" onClick={installPack} disabled={view === "working"}>
-                    <Download size={18} />
-                    {status?.installed
-                      ? "Repair / Re-sync"
-                      : status?.installedVersion
-                        ? "Update Pack"
-                        : "Install Pack"}
+                  <button className="primary-button" onClick={() => void runPrimaryPackAction()} disabled={view === "working"}>
+                    {primaryPackIcon}
+                    {primaryPackLabel}
                   </button>
+                  {primaryPackAction === "play" && (
+                    <button className="secondary-button" onClick={installPack} disabled={view === "working"}>
+                      <RefreshCcw size={18} />
+                      Repair / Re-sync
+                    </button>
+                  )}
                   <button className="secondary-button" onClick={openFolder}>
                     <FolderOpen size={18} />
                     Open Folder
@@ -981,7 +1145,7 @@ export function App() {
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void searchMods();
                       }}
-                      placeholder={`Fabric mods for ${manifest.minecraftVersion}`}
+                      placeholder={`${formatLoader(manifest.loader.type, "").trim()} mods for ${manifest.minecraftVersion}`}
                     />
                   </label>
                   <button className="secondary-button" onClick={searchMods} disabled={modLoading || modQuery.trim().length < 2}>
@@ -1106,6 +1270,19 @@ function StatusPill({ installed }: { installed: boolean }) {
   return <span className={installed ? "status-pill good" : "status-pill"}>{installed ? "Ready" : "Needs install"}</span>;
 }
 
+function packActionLabel(action: PackHealthSummary["recommendedAction"]): string {
+  switch (action) {
+    case "play":
+      return "Play";
+    case "update":
+      return "Update Pack";
+    case "repair":
+      return "Repair Pack";
+    case "install":
+      return "Install Pack";
+  }
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="stat">
@@ -1123,6 +1300,15 @@ function formatLoader(loaderType: LoaderType, loaderVersion: string): string {
     neoforge: "NeoForge"
   }[loaderType];
   return loaderType === "vanilla" ? name : `${name} ${loaderVersion}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(1)} KiB`;
+  const mib = kib / 1024;
+  if (mib < 1024) return `${mib.toFixed(1)} MiB`;
+  return `${(mib / 1024).toFixed(2)} GiB`;
 }
 
 function displayFileModName(file: ManifestFile): string {
