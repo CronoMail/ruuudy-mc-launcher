@@ -163,6 +163,7 @@ const DEFAULT_API_BASE = "https://launcher.ruuudy.in";
 
 export function App() {
   const apiBase = DEFAULT_API_BASE;
+  const [introVisible, setIntroVisible] = useState(() => sessionStorage.getItem("ruuudy-intro-seen") !== "1");
   const [code, setCode] = useState(DEFAULT_CODE);
   const [quickCode, setQuickCode] = useState("");
   const [adminToken, setAdminToken] = useState(() => localStorage.getItem("ruuudy-admin-token") ?? "");
@@ -205,6 +206,17 @@ export function App() {
       void unlisten.then((dispose) => dispose());
     };
   }, []);
+
+  useEffect(() => {
+    if (!introVisible) return;
+
+    const timer = window.setTimeout(() => {
+      sessionStorage.setItem("ruuudy-intro-seen", "1");
+      setIntroVisible(false);
+    }, 1650);
+
+    return () => window.clearTimeout(timer);
+  }, [introVisible]);
 
   useEffect(() => {
     localStorage.setItem("ruuudy-admin-token", adminToken);
@@ -746,11 +758,20 @@ export function App() {
   const primaryPackIcon = primaryPackAction === "play" ? <Play size={18} /> : <Download size={18} />;
 
   return (
-    <main className="app-shell">
+    <>
+      {introVisible && (
+        <div className="intro-splash" aria-hidden="true">
+          <div className="intro-logo-wrap">
+            <div className="intro-logo-mark">R</div>
+          </div>
+          <span>Ruuudy MC Launcher</span>
+        </div>
+      )}
+      <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-icon">
-            <Gamepad2 size={24} />
+          <div className="brand-icon r-mark" aria-hidden="true">
+            <span>R</span>
           </div>
           <div>
             <h1>Ruuudy MC</h1>
@@ -1263,6 +1284,7 @@ export function App() {
         )}
       </section>
     </main>
+    </>
   );
 }
 
