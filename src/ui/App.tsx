@@ -286,6 +286,24 @@ export function App() {
     }
   }
 
+  async function lookupLocalPack(nextCode: string) {
+    setError(null);
+    setSummary(null);
+    setImportSummary(null);
+    setPublishSummary(null);
+    setModNotice(null);
+    setProgress(null);
+    try {
+      const pack = await invoke<PackManifest>("lookup_pack", { code: nextCode });
+      await loadManifest(nextCode.trim().toUpperCase(), pack);
+      setActiveTab("overview");
+      setView("ready");
+    } catch (err) {
+      setError(String(err));
+      setView("lookup");
+    }
+  }
+
   async function lookupQuickCode() {
     const nextCode = quickCode.trim();
     if (!nextCode) {
@@ -804,7 +822,7 @@ export function App() {
             <button
               key={profile.code}
               className="profile-button"
-              onClick={() => void lookupPack(profile.code)}
+              onClick={() => void lookupLocalPack(profile.code)}
             >
               <span>{profile.packName}</span>
               <small>{profile.code} - {profile.installed ? "ready" : "needs sync"}</small>
@@ -1028,7 +1046,7 @@ export function App() {
                     <button
                       key={profile.code}
                       className="home-pack-card"
-                      onClick={() => void lookupPack(profile.code)}
+                      onClick={() => void lookupLocalPack(profile.code)}
                     >
                       <span>{profile.packName}</span>
                       <small>{profile.code}</small>

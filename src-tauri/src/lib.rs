@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::System;
 use tauri::{AppHandle, Emitter};
@@ -393,6 +393,8 @@ fn lookup_remote_pack(code: String, api_base: String) -> LauncherResult<PackMani
     let api_base = normalize_api_base(&api_base)?;
     let client = Client::builder()
         .user_agent("RuuudyMCLauncher/0.1")
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
         .build()?;
     let manifest = client
         .get(format!("{api_base}/api/packs/{code}"))
@@ -419,7 +421,13 @@ fn get_install_status(manifest: PackManifest) -> LauncherResult<InstallStatus> {
 }
 
 #[tauri::command]
-fn get_pack_health(manifest: PackManifest) -> LauncherResult<PackHealthSummary> {
+async fn get_pack_health(manifest: PackManifest) -> LauncherResult<PackHealthSummary> {
+    tauri::async_runtime::spawn_blocking(move || get_pack_health_blocking(manifest))
+        .await
+        .map_err(|err| LauncherError::Message(format!("Pack health task failed: {err}")))?
+}
+
+fn get_pack_health_blocking(manifest: PackManifest) -> LauncherResult<PackHealthSummary> {
     validate_manifest(&manifest)?;
     let profile_dir = profile_dir(&manifest)?;
     let state = read_install_state(&profile_dir)?;
