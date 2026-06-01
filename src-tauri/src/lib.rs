@@ -161,6 +161,7 @@ struct CurseForgeZipPreview {
     override_files: usize,
     override_mod_jars: usize,
     resource_packs: usize,
+    shader_packs: usize,
     total_override_size: u64,
 }
 
@@ -628,6 +629,7 @@ fn install_pack_blocking(
     }
 
     sync_resource_pack_options(&profile_dir, &manifest, state.as_ref())?;
+    sync_shader_pack_options(&profile_dir, &manifest, state.as_ref())?;
 
     emit_progress(
         &app,
@@ -698,6 +700,7 @@ fn inspect_curseforge_zip(zip_path: String) -> LauncherResult<CurseForgeZipPrevi
     let mut override_files = 0;
     let mut override_mod_jars = 0;
     let mut resource_packs = 0;
+    let mut shader_packs = 0;
     let mut total_override_size = 0;
 
     for index in 0..archive.len() {
@@ -720,6 +723,9 @@ fn inspect_curseforge_zip(zip_path: String) -> LauncherResult<CurseForgeZipPrevi
         if normalized.starts_with("resourcepacks/") && normalized.ends_with(".zip") {
             resource_packs += 1;
         }
+        if normalized.starts_with("shaderpacks/") && normalized.ends_with(".zip") {
+            shader_packs += 1;
+        }
     }
 
     Ok(CurseForgeZipPreview {
@@ -737,6 +743,7 @@ fn inspect_curseforge_zip(zip_path: String) -> LauncherResult<CurseForgeZipPrevi
         override_files,
         override_mod_jars,
         resource_packs,
+        shader_packs,
         total_override_size,
     })
 }
@@ -1327,6 +1334,21 @@ async fn import_local_resource_packs_to_profile(
     })?
 }
 
+#[tauri::command]
+async fn import_local_shader_packs_to_profile(
+    code: String,
+    manifest: PackManifest,
+    shader_pack_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_local_shader_packs_to_profile_blocking(code, manifest, shader_pack_paths)
+    })
+    .await
+    .map_err(|error| {
+        LauncherError::Message(format!("Shader pack import worker failed: {error}"))
+    })?
+}
+
 fn import_local_jars_to_profile_blocking(
     code: String,
     manifest: PackManifest,
@@ -1368,6 +1390,32 @@ fn import_local_resource_packs_to_profile_blocking(
         &profile_dir,
         "options.txt",
     )?);
+
+    let next_state = LocalInstallState {
+        pack_id: next_manifest.pack_id.clone(),
+        manifest_version: next_manifest.version.clone(),
+        managed_files: build_install_plan(&next_manifest, None).next_managed_files,
+    };
+    write_install_state(&profile_dir, &next_state)?;
+    save_profile_manifest(code, next_manifest.clone())?;
+    Ok(next_manifest)
+}
+
+fn import_local_shader_packs_to_profile_blocking(
+    code: String,
+    manifest: PackManifest,
+    shader_pack_paths: Vec<String>,
+) -> LauncherResult<PackManifest> {
+    let code = normalize_pack_code(&code)?;
+    validate_manifest(&manifest)?;
+    let profile_dir = profile_dir(&manifest)?;
+    let previous_state = read_install_state(&profile_dir)?;
+    let source_paths = shader_pack_paths
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let next_manifest = add_local_shader_pack_overrides(manifest, &profile_dir, &source_paths)?;
+    sync_shader_pack_options(&profile_dir, &next_manifest, previous_state.as_ref())?;
 
     let next_state = LocalInstallState {
         pack_id: next_manifest.pack_id.clone(),
@@ -1476,6 +1524,48 @@ fn add_local_resource_pack_overrides(
     Ok(manifest)
 }
 
+fn add_local_shader_pack_overrides(
+    mut manifest: PackManifest,
+    profile_dir: &Path,
+    shader_pack_paths: &[PathBuf],
+) -> LauncherResult<PackManifest> {
+    if shader_pack_paths.is_empty() {
+        return Err(LauncherError::Message(
+            "Select at least one shader pack zip to import.".to_string(),
+        ));
+    }
+
+    for source_path in shader_pack_paths {
+        if !source_path.exists() || !source_path.is_file() {
+            return Err(LauncherError::Message(
+                "Selected shader pack file does not exist.".to_string(),
+            ));
+        }
+
+        let filename = source_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                LauncherError::Message("Selected shader pack has no filename.".to_string())
+            })?
+            .to_string();
+        if !filename.to_lowercase().ends_with(".zip") {
+            return Err(LauncherError::Message(
+                "Only .zip files can be imported as local shader packs.".to_string(),
+            ));
+        }
+
+        let relative_path = format!("shaderpacks/{filename}");
+        add_local_override_file(&mut manifest, profile_dir, source_path, &relative_path)?;
+    }
+
+    manifest
+        .overrides
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    manifest.version = format!("manual-{}", unix_timestamp());
+    Ok(manifest)
+}
+
 fn add_local_override_file(
     manifest: &mut PackManifest,
     profile_dir: &Path,
@@ -1573,6 +1663,7 @@ pub fn run() {
             import_local_jar_to_profile,
             import_local_jars_to_profile,
             import_local_resource_packs_to_profile,
+            import_local_shader_packs_to_profile,
             open_profile_folder,
             open_minecraft_launcher
         ])
@@ -3032,6 +3123,11 @@ fn is_resource_pack_zip(relative_path: &str) -> bool {
     normalized.starts_with("resourcepacks/") && normalized.ends_with(".zip")
 }
 
+fn is_shader_pack_zip(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    normalized.starts_with("shaderpacks/") && normalized.ends_with(".zip")
+}
+
 fn resource_pack_options_entry(relative_path: &str) -> Option<String> {
     if !is_resource_pack_zip(relative_path) {
         return None;
@@ -3049,6 +3145,31 @@ fn manifest_resource_pack_entries(manifest: &PackManifest) -> Vec<String> {
     let mut entries = Vec::new();
     for override_file in &manifest.overrides {
         if let Some(entry) = resource_pack_options_entry(&override_file.path) {
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+    }
+    entries
+}
+
+fn shader_pack_filename(relative_path: &str) -> Option<String> {
+    if !is_shader_pack_zip(relative_path) {
+        return None;
+    }
+
+    let normalized = relative_path.replace('\\', "/");
+    normalized
+        .rsplit('/')
+        .next()
+        .filter(|filename| !filename.is_empty())
+        .map(|filename| filename.to_string())
+}
+
+fn manifest_shader_pack_filenames(manifest: &PackManifest) -> Vec<String> {
+    let mut entries = Vec::new();
+    for override_file in &manifest.overrides {
+        if let Some(entry) = shader_pack_filename(&override_file.path) {
             if !entries.contains(&entry) {
                 entries.push(entry);
             }
@@ -3150,8 +3271,99 @@ fn sync_resource_pack_options(
     Ok(())
 }
 
+fn read_properties(lines: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.to_string())
+}
+
+fn upsert_property(lines: &mut Vec<String>, key: &str, value: &str) {
+    let next_line = format!("{key}={value}");
+    let prefix = format!("{key}=");
+    if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
+        *line = next_line;
+    } else {
+        lines.push(next_line);
+    }
+}
+
+fn remove_property(lines: &mut Vec<String>, key: &str) {
+    let prefix = format!("{key}=");
+    lines.retain(|line| !line.starts_with(&prefix));
+}
+
+fn sync_shader_pack_options(
+    profile_dir: &Path,
+    manifest: &PackManifest,
+    previous_state: Option<&LocalInstallState>,
+) -> LauncherResult<()> {
+    let current_packs = manifest_shader_pack_filenames(manifest);
+    if current_packs.is_empty() && previous_state.is_none() {
+        return Ok(());
+    }
+
+    let current_set: BTreeSet<String> = current_packs.iter().cloned().collect();
+    let stale_packs: BTreeSet<String> = previous_state
+        .map(|state| {
+            state
+                .managed_files
+                .iter()
+                .filter_map(|path| shader_pack_filename(path))
+                .filter(|entry| !current_set.contains(entry))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if current_packs.is_empty() && stale_packs.is_empty() {
+        return Ok(());
+    }
+
+    let config_path = profile_dir.join("config").join("iris.properties");
+    let mut lines = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let current_shader = read_properties(&lines, "shaderPack");
+    let next_shader = if current_shader
+        .as_ref()
+        .is_some_and(|shader| current_set.contains(shader))
+    {
+        current_shader.clone()
+    } else {
+        current_packs.last().cloned()
+    };
+
+    if let Some(shader_pack) = next_shader {
+        upsert_property(&mut lines, "enableShaders", "true");
+        upsert_property(&mut lines, "shaderPack", &shader_pack);
+    } else if current_shader
+        .as_ref()
+        .is_some_and(|shader| stale_packs.contains(shader))
+    {
+        upsert_property(&mut lines, "enableShaders", "false");
+        remove_property(&mut lines, "shaderPack");
+    } else {
+        return Ok(());
+    }
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(config_path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
+}
+
 fn is_managed_override_file(relative_path: &str) -> bool {
-    is_override_mod_jar(relative_path) || is_resource_pack_zip(relative_path)
+    is_override_mod_jar(relative_path)
+        || is_resource_pack_zip(relative_path)
+        || is_shader_pack_zip(relative_path)
 }
 
 #[cfg(test)]
@@ -3515,8 +3727,107 @@ mod tests {
     fn managed_override_files_include_mod_jars_and_resource_pack_zips() {
         assert!(is_managed_override_file("mods/local-mod.jar"));
         assert!(is_managed_override_file("resourcepacks/RCT.zip"));
+        assert!(is_managed_override_file("shaderpacks/Complementary.zip"));
         assert!(!is_managed_override_file("datapacks/RCT.zip"));
         assert!(!is_managed_override_file("resourcepacks/readme.txt"));
+        assert!(!is_managed_override_file("shaderpacks/readme.txt"));
+    }
+
+    #[test]
+    fn local_shader_pack_import_adds_shaderpack_overrides() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-shaderpack-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_dir = root.join("source");
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(&source_dir).unwrap();
+        let pack = source_dir.join("Complementary.zip");
+        fs::write(&pack, b"shader-pack").unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-old".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: None,
+        };
+
+        let next_manifest =
+            add_local_shader_pack_overrides(manifest, &profile_dir, &[pack.clone()]).unwrap();
+
+        assert_eq!(next_manifest.overrides.len(), 1);
+        assert_eq!(next_manifest.overrides[0].path, "shaderpacks/Complementary.zip");
+        assert_eq!(
+            fs::read(profile_dir.join("shaderpacks/Complementary.zip")).unwrap(),
+            b"shader-pack"
+        );
+        assert!(is_managed_override_file(&next_manifest.overrides[0].path));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_shader_packs_enables_managed_shader_in_iris_config() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-shaderpack-options-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile_dir = root.join("profile");
+        fs::create_dir_all(profile_dir.join("config")).unwrap();
+        fs::write(
+            profile_dir.join("config").join("iris.properties"),
+            "maxShadowRenderDistance=32\nshaderPack=Personal.zip\n",
+        )
+        .unwrap();
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "fakersbob".to_string(),
+            pack_name: "Fakersbob".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: vec![ManifestOverride {
+                path: "shaderpacks/Complementary.zip".to_string(),
+                url: "local-pending://shaderpacks/Complementary.zip".to_string(),
+                sha256: "3".repeat(64),
+                size: 10,
+            }],
+            default_options: None,
+        };
+
+        sync_shader_pack_options(&profile_dir, &manifest, None).unwrap();
+
+        let config = fs::read_to_string(profile_dir.join("config").join("iris.properties")).unwrap();
+        assert!(config.contains("maxShadowRenderDistance=32"));
+        assert!(config.contains("enableShaders=true"));
+        assert!(config.contains("shaderPack=Complementary.zip"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

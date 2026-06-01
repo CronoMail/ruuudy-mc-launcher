@@ -66,6 +66,7 @@ type CurseForgeZipPreview = {
   overrideFiles: number;
   overrideModJars: number;
   resourcePacks: number;
+  shaderPacks: number;
   totalOverrideSize: number;
 };
 
@@ -701,6 +702,36 @@ export function App() {
     }
   }
 
+  async function importShaderPacks() {
+    if (!manifest) return;
+    setError(null);
+    setModNotice(null);
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: "Minecraft Shader Pack Zip", extensions: ["zip"] }]
+    });
+    const shaderPackPaths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (shaderPackPaths.length === 0) return;
+
+    setModLoading(true);
+    try {
+      const nextManifest = await invoke<PackManifest>("import_local_shader_packs_to_profile", {
+        code,
+        manifest,
+        shaderPackPaths
+      });
+      await loadManifest(code.trim().toUpperCase(), nextManifest);
+      await refreshProfiles();
+      setModNotice(
+        `${shaderPackPaths.length} shader pack${shaderPackPaths.length === 1 ? "" : "s"} imported and enabled. Click Publish to upload ${shaderPackPaths.length === 1 ? "it" : "them"} for friends.`
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setModLoading(false);
+    }
+  }
+
   async function removeMod(mod: ManagedMod) {
     if (!manifest) return;
     const filename = mod.filename;
@@ -1020,6 +1051,7 @@ export function App() {
                   <Stat label="Optional mods" value={String(importPreview.optionalMods)} />
                   <Stat label="Overrides" value={String(importPreview.overrideFiles)} />
                   <Stat label="Resource packs" value={String(importPreview.resourcePacks)} />
+                  <Stat label="Shader packs" value={String(importPreview.shaderPacks)} />
                   <Stat label="Local mod jars" value={String(importPreview.overrideModJars)} />
                   <Stat label="Override size" value={formatBytes(importPreview.totalOverrideSize)} />
                 </div>
@@ -1203,6 +1235,10 @@ export function App() {
                     <Upload size={18} />
                     Import Resource Packs
                   </button>
+                  <button className="secondary-button" onClick={importShaderPacks} disabled={modLoading}>
+                    <Upload size={18} />
+                    Import Shader Packs
+                  </button>
                 </div>
 
                 <div className="managed-mods">
@@ -1211,7 +1247,7 @@ export function App() {
                     <strong>{managedMods.length}</strong>
                   </div>
                   {managedMods.length === 0 ? (
-                    <p className="muted">No managed mods or resource packs in this profile yet.</p>
+                    <p className="muted">No managed mods, resource packs, or shader packs in this profile yet.</p>
                   ) : (
                     managedMods.map((mod) => (
                       <div className="mod-row" key={`${mod.kind}-${mod.detail}`}>
@@ -1371,6 +1407,11 @@ function isResourcePackZip(path: string): boolean {
   return normalized.startsWith("resourcepacks/") && normalized.endsWith(".zip");
 }
 
+function isShaderPackZip(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/").toLowerCase();
+  return normalized.startsWith("shaderpacks/") && normalized.endsWith(".zip");
+}
+
 function isManagedOverrideContent(path: string): boolean {
-  return isOverrideModJar(path) || isResourcePackZip(path);
+  return isOverrideModJar(path) || isResourcePackZip(path) || isShaderPackZip(path);
 }
