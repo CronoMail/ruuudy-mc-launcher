@@ -1,0 +1,36 @@
+services:
+  pack-api:
+    image: node:22-alpine
+    container_name: ruuudy-pack-api
+    user: "${PACK_API_UID:-1001}:${PACK_API_GID:-1001}"
+    working_dir: /app
+    command: ["node", "server/manifest-server.mjs"]
+    environment:
+      PORT: 8787
+      PACK_ADMIN_TOKEN_FILE: /run/secrets/pack_admin_token
+      PACK_DATA_DIR: /app/server/data
+      PACK_MAX_UPLOAD_BYTES: ${PACK_MAX_UPLOAD_BYTES:-536870912}
+    volumes:
+      - ./server/manifest-server.mjs:/app/server/manifest-server.mjs:ro
+      - ./server/data:/app/server/data
+      - ./admin-token.txt:/run/secrets/pack_admin_token:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      streamrelay_default:
+        aliases:
+          - pack-api
+    restart: unless-stopped
+
+networks:
+  streamrelay_default:
+    external: true

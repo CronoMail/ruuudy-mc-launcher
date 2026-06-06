@@ -23,6 +23,17 @@ npm install --omit=dev
 PACK_ADMIN_TOKEN='change-this-long-token' PORT=8787 npm run pack-server
 ```
 
+For Docker on the Oracle VM, prefer the standalone root `docker-compose.yml` and run:
+
+```bash
+cd /opt/ruuudy-mc-launcher
+docker compose up -d
+docker compose restart pack-api
+```
+
+This keeps the launcher API separate from the StreamRelay compose stack while still exposing
+the `pack-api` Docker network alias used by Caddy.
+
 For PM2:
 
 ```bash
