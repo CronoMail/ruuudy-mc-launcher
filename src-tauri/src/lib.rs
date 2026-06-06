@@ -1,6 +1,8 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -16,6 +18,8 @@ use zip::ZipArchive;
 
 const FAKERSBOB_MANIFEST: &str = include_str!("../packs/fakersbob/manifest.json");
 const LOCAL_PENDING_URL_PREFIX: &str = "local-pending://";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Error)]
 enum LauncherError {
@@ -1344,9 +1348,7 @@ async fn import_local_shader_packs_to_profile(
         import_local_shader_packs_to_profile_blocking(code, manifest, shader_pack_paths)
     })
     .await
-    .map_err(|error| {
-        LauncherError::Message(format!("Shader pack import worker failed: {error}"))
-    })?
+    .map_err(|error| LauncherError::Message(format!("Shader pack import worker failed: {error}")))?
 }
 
 fn import_local_jars_to_profile_blocking(
@@ -2450,17 +2452,18 @@ fn run_java_mod_loader_installer(
     installer_path: &Path,
     minecraft_dir: &Path,
 ) -> LauncherResult<()> {
-    let output = Command::new("java")
+    let mut command = Command::new("java");
+    command
         .arg("-jar")
         .arg(installer_path)
         .arg("--installClient")
-        .current_dir(minecraft_dir)
-        .output()
-        .map_err(|error| {
-            LauncherError::Message(format!(
-                "Could not run the Java mod loader installer. Install Java 17+ or add java.exe to PATH, then import again. {error}"
-            ))
-        })?;
+        .current_dir(minecraft_dir);
+    hide_subprocess_window(&mut command);
+    let output = command.output().map_err(|error| {
+        LauncherError::Message(format!(
+            "Could not run the Java mod loader installer. Install Java 17+ or add java.exe to PATH, then import again. {error}"
+        ))
+    })?;
     if output.status.success() {
         return Ok(());
     }
@@ -2529,7 +2532,8 @@ fn upsert_official_launcher_profile(
     {
         root["profiles"] = serde_json::json!({});
     }
-    root["profiles"][profile_id] = profile;
+    root["profiles"][profile_id.as_str()] = profile;
+    root["selectedProfile"] = serde_json::Value::String(profile_id);
 
     if let Some(parent) = launcher_profiles.parent() {
         fs::create_dir_all(parent)?;
@@ -2635,11 +2639,20 @@ fn round_one_decimal(value: f64) -> f64 {
 }
 
 fn java_available() -> bool {
-    Command::new("java")
-        .arg("-version")
+    let mut command = Command::new("java");
+    command.arg("-version");
+    hide_subprocess_window(&mut command);
+    command
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn hide_subprocess_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 fn remove_official_launcher_profile(manifest: &PackManifest) -> LauncherResult<()> {
@@ -3101,7 +3114,7 @@ fn extract_overrides<R: Read + std::io::Seek>(
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let size = bytes.len() as u64;
         managed_files.push(relative.clone());
-        if is_override_mod_jar(&relative) {
+        if is_managed_override_file(&relative) {
             overrides.push(ManifestOverride {
                 path: relative.clone(),
                 url: format!("{LOCAL_PENDING_URL_PREFIX}{relative}"),
@@ -3111,11 +3124,6 @@ fn extract_overrides<R: Read + std::io::Seek>(
         }
     }
     Ok(overrides)
-}
-
-fn is_override_mod_jar(relative_path: &str) -> bool {
-    let normalized = relative_path.replace('\\', "/").to_lowercase();
-    normalized.starts_with("mods/") && normalized.ends_with(".jar")
 }
 
 fn is_resource_pack_zip(relative_path: &str) -> bool {
@@ -3361,9 +3369,23 @@ fn sync_shader_pack_options(
 }
 
 fn is_managed_override_file(relative_path: &str) -> bool {
-    is_override_mod_jar(relative_path)
-        || is_resource_pack_zip(relative_path)
-        || is_shader_pack_zip(relative_path)
+    let normalized = relative_path.replace('\\', "/");
+    if safe_relative_path(&normalized).is_err() {
+        return false;
+    }
+    let lower = normalized.to_lowercase();
+    if lower.is_empty()
+        || lower == "manifest.json"
+        || lower == "modlist.html"
+        || lower.ends_with('/')
+        || lower.starts_with(".ruuudy-launcher/")
+        || lower.starts_with("saves/")
+        || lower.starts_with("crash-reports/")
+        || lower.starts_with("logs/")
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -3728,9 +3750,78 @@ mod tests {
         assert!(is_managed_override_file("mods/local-mod.jar"));
         assert!(is_managed_override_file("resourcepacks/RCT.zip"));
         assert!(is_managed_override_file("shaderpacks/Complementary.zip"));
-        assert!(!is_managed_override_file("datapacks/RCT.zip"));
-        assert!(!is_managed_override_file("resourcepacks/readme.txt"));
-        assert!(!is_managed_override_file("shaderpacks/readme.txt"));
+        assert!(is_managed_override_file(
+            "config/defaultoptions/options.txt"
+        ));
+        assert!(is_managed_override_file("defaultconfigs/forge-server.toml"));
+        assert!(is_managed_override_file(
+            "kubejs/startup_scripts/biohazard.js"
+        ));
+        assert!(is_managed_override_file("tacz/custom/gun.json"));
+        assert!(!is_managed_override_file("saves/Test World/level.dat"));
+        assert!(!is_managed_override_file("logs/latest.log"));
+        assert!(!is_managed_override_file("../outside.txt"));
+    }
+
+    #[test]
+    fn official_launcher_profile_is_selected_after_upsert() {
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-selected-profile-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &root);
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "biohazard-public-beta-bentoboob".to_string(),
+            pack_name: "Biohazard Public Beta".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.20.1".to_string(),
+            loader: Loader {
+                loader_type: "forge".to_string(),
+                version: "47.4.0".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: None,
+        };
+        let profile_dir = profile_dir(&manifest).unwrap();
+
+        upsert_official_launcher_profile(&manifest, &profile_dir, Some("BENTOBOOB")).unwrap();
+
+        let launcher_profiles =
+            fs::read_to_string(root.join(".minecraft/launcher_profiles.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&launcher_profiles).unwrap();
+        let profile_id = minecraft_profile_id(&manifest);
+        assert_eq!(
+            parsed
+                .get("selectedProfile")
+                .and_then(|value| value.as_str()),
+            Some(profile_id.as_str())
+        );
+        assert_eq!(
+            parsed["profiles"][profile_id.as_str()]["name"].as_str(),
+            Some("BENTOBOOB Server")
+        );
+        assert_eq!(
+            parsed["profiles"][profile_id.as_str()]["lastVersionId"].as_str(),
+            Some("1.20.1-forge-47.4.0")
+        );
+
+        if let Some(appdata) = previous_appdata {
+            std::env::set_var("APPDATA", appdata);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3771,7 +3862,10 @@ mod tests {
             add_local_shader_pack_overrides(manifest, &profile_dir, &[pack.clone()]).unwrap();
 
         assert_eq!(next_manifest.overrides.len(), 1);
-        assert_eq!(next_manifest.overrides[0].path, "shaderpacks/Complementary.zip");
+        assert_eq!(
+            next_manifest.overrides[0].path,
+            "shaderpacks/Complementary.zip"
+        );
         assert_eq!(
             fs::read(profile_dir.join("shaderpacks/Complementary.zip")).unwrap(),
             b"shader-pack"
@@ -3823,7 +3917,8 @@ mod tests {
 
         sync_shader_pack_options(&profile_dir, &manifest, None).unwrap();
 
-        let config = fs::read_to_string(profile_dir.join("config").join("iris.properties")).unwrap();
+        let config =
+            fs::read_to_string(profile_dir.join("config").join("iris.properties")).unwrap();
         assert!(config.contains("maxShadowRenderDistance=32"));
         assert!(config.contains("enableShaders=true"));
         assert!(config.contains("shaderPack=Complementary.zip"));
