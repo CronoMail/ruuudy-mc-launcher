@@ -1,0 +1,15 @@
+{
+  "id": "launcher-pack-installer",
+  "name": "Launcher Pack Installer",
+  "author": "Ruuudy",
+  "version": "1.0.0",
+  "description": "Install launcher API packs on Pelican servers",
+  "category": "plugin",
+  "url": null,
+  "update_url": null,
+  "namespace": "Ruuudy\\LauncherPackInstaller",
+  "class": "LauncherPackInstallerPlugin",
+  "panels": ["server"],
+  "panel_version": "^1.0.0-beta34",
+  "composer_packages": null
+}
