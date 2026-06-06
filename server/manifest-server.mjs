@@ -178,9 +178,6 @@ async function readRawBody(request, maxBytes) {
     }
     chunks.push(chunk);
   }
-  if (chunks.length === 0) {
-    throw httpError(400, "Request body is required.");
-  }
   return Buffer.concat(chunks);
 }
 
