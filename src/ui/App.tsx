@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import {
   CheckCircle2,
   Copy,
@@ -21,7 +21,7 @@ import {
   Upload,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LoaderType, ManifestFile, ManifestOverride, PackManifest } from "../core/manifest";
 import { formatUpdateStatus, type UpdateStatus } from "../core/updater";
 
@@ -198,6 +198,7 @@ export function App() {
   const [modNotice, setModNotice] = useState<string | null>(null);
   const [launcherUpdate, setLauncherUpdate] = useState<Update | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const updateInFlightRef = useRef(false);
 
   useEffect(() => {
     const unlisten = listen<ProgressEvent>("install-progress", (event) => {
@@ -229,7 +230,7 @@ export function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void checkLauncherUpdate({ silent: true });
+      void installLauncherUpdate({ automatic: true });
     }, 1200);
     return () => window.clearTimeout(timer);
   }, []);
@@ -335,7 +336,7 @@ export function App() {
   }
 
   async function checkLauncherUpdate(options: { silent?: boolean } = {}) {
-    if (updateStatus.state === "checking" || updateStatus.state === "downloading") return;
+    if (isUpdateBusy(updateStatus) || updateInFlightRef.current) return;
 
     if (!options.silent) {
       setError(null);
@@ -363,28 +364,68 @@ export function App() {
     }
   }
 
-  async function installLauncherUpdate() {
-    setError(null);
-    let update = launcherUpdate;
-
-    if (!update) {
-      setUpdateStatus({ state: "checking" });
-      update = await check();
-      if (!update) {
-        setUpdateStatus({ state: "current" });
-        return;
-      }
-      setLauncherUpdate(update);
-      setUpdateStatus({ state: "available", version: update.version });
-    }
-
+  async function installLauncherUpdate(options: { automatic?: boolean } = {}) {
+    if (updateInFlightRef.current) return;
+    updateInFlightRef.current = true;
     try {
-      setUpdateStatus({ state: "downloading" });
-      await update.downloadAndInstall();
+      if (!options.automatic) {
+        setError(null);
+      }
+
+      let update = launcherUpdate;
+      if (!update) {
+        setUpdateStatus({ state: "checking" });
+        update = await check();
+        if (!update) {
+          setLauncherUpdate(null);
+          setUpdateStatus(options.automatic ? { state: "idle" } : { state: "current" });
+          return;
+        }
+        setLauncherUpdate(update);
+      }
+
+      let downloadedBytes = 0;
+      let totalBytes: number | null = null;
+      setUpdateStatus({
+        state: "downloading",
+        version: update.version,
+        downloadedBytes,
+        totalBytes
+      });
+      await update.downloadAndInstall((event: DownloadEvent) => {
+        if (event.event === "Started") {
+          downloadedBytes = 0;
+          totalBytes = event.data.contentLength ?? null;
+          setUpdateStatus({
+            state: "downloading",
+            version: update.version,
+            downloadedBytes,
+            totalBytes
+          });
+          return;
+        }
+        if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          setUpdateStatus({
+            state: "downloading",
+            version: update.version,
+            downloadedBytes,
+            totalBytes
+          });
+          return;
+        }
+        setUpdateStatus({ state: "installing", version: update.version });
+      });
+      setUpdateStatus({ state: "restarting", version: update.version });
       await relaunch();
     } catch (err) {
-      setUpdateStatus({ state: "error", message: "Update install failed" });
-      setError(`Launcher update install failed: ${String(err)}`);
+      setLauncherUpdate(null);
+      setUpdateStatus({ state: "error", message: options.automatic ? "Auto-update failed" : "Update install failed" });
+      if (!options.automatic) {
+        setError(`Launcher update install failed: ${String(err)}`);
+      }
+    } finally {
+      updateInFlightRef.current = false;
     }
   }
 
@@ -805,6 +846,7 @@ export function App() {
   const primaryPackAction = health?.recommendedAction ?? (status?.installed ? "play" : "install");
   const primaryPackLabel = packActionLabel(primaryPackAction);
   const primaryPackIcon = primaryPackAction === "play" ? <Play size={18} /> : <Download size={18} />;
+  const updateOverlayVisible = isUpdateOverlayVisible(updateStatus);
 
   return (
     <>
@@ -816,6 +858,7 @@ export function App() {
           <span>Ruuudy MC Launcher</span>
         </div>
       )}
+      {updateOverlayVisible && <LauncherUpdateOverlay status={updateStatus} />}
       <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
@@ -906,7 +949,7 @@ export function App() {
             <button
               className={launcherUpdate ? "update-button available" : "ghost-button"}
               onClick={() => launcherUpdate ? void installLauncherUpdate() : void checkLauncherUpdate()}
-              disabled={updateStatus.state === "checking" || updateStatus.state === "downloading"}
+              disabled={isUpdateBusy(updateStatus)}
             >
               <RefreshCcw size={16} />
               {formatUpdateStatus(updateStatus)}
@@ -1340,6 +1383,73 @@ export function App() {
     </main>
     </>
   );
+}
+
+function LauncherUpdateOverlay({ status }: { status: UpdateStatus }) {
+  const percent = updateDownloadPercent(status);
+  const version = "version" in status ? status.version : undefined;
+  const title =
+    status.state === "checking"
+      ? "Checking for launcher update"
+      : status.state === "downloading"
+        ? "Updating launcher"
+        : status.state === "installing"
+          ? "Installing launcher update"
+          : "Restarting launcher";
+  const detail =
+    status.state === "checking"
+      ? "Looking for the newest launcher build."
+      : status.state === "downloading"
+        ? version
+          ? `Downloading version ${version}.`
+          : "Downloading the newest launcher build."
+        : status.state === "installing"
+          ? "Applying the update in the background."
+          : "Relaunching into the updated app.";
+
+  return (
+    <div className="update-overlay" role="status" aria-live="polite">
+      <div className="update-card">
+        <div className="update-card-mark" aria-hidden="true">
+          R
+        </div>
+        <div>
+          <span className="eyebrow">Launcher Update</span>
+          <h2>{title}</h2>
+          <p>{detail}</p>
+        </div>
+        <div className="update-progress-track">
+          <div
+            className={percent === null ? "update-progress-bar indeterminate" : "update-progress-bar"}
+            style={percent === null ? undefined : { width: `${percent}%` }}
+          />
+        </div>
+        <small>
+          {percent === null ? formatUpdateStatus(status) : `${percent}% downloaded`}
+        </small>
+      </div>
+    </div>
+  );
+}
+
+function isUpdateBusy(status: UpdateStatus): boolean {
+  return (
+    status.state === "checking" ||
+    status.state === "downloading" ||
+    status.state === "installing" ||
+    status.state === "restarting"
+  );
+}
+
+function isUpdateOverlayVisible(status: UpdateStatus): boolean {
+  return isUpdateBusy(status);
+}
+
+function updateDownloadPercent(status: UpdateStatus): number | null {
+  if (status.state !== "downloading" || !status.totalBytes || status.downloadedBytes === undefined) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, Math.round((status.downloadedBytes / status.totalBytes) * 100)));
 }
 
 function StatusPill({ installed }: { installed: boolean }) {
