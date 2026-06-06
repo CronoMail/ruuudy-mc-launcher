@@ -31,6 +31,12 @@ class LauncherPackPage extends Page
         }
     }
 
+    public static function canAccess(): bool
+    {
+        return parent::canAccess()
+            && user()?->can('launcher-pack-installer.install', Filament::getTenant());
+    }
+
     public function getServer(): Server
     {
         return Filament::getTenant();
