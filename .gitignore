@@ -3,9 +3,12 @@ dist/
 src-tauri/target/
 .env
 .env.*
+admin-token.txt
 *.key
 *.key.pub
 *.sig
+server/data/packs/*
+server/manifest-server.mjs.bak*
 .DS_Store
 Thumbs.db
 RELEASE.md
