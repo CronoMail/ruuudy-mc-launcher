@@ -415,6 +415,30 @@ select:focus-visible {
   background: #111112;
 }
 
+.server-pack-settings {
+  display: grid;
+  gap: 0.72rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+
+.admin-box .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.admin-box .checkbox-row input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.admin-box textarea {
+  min-height: 6.75rem;
+  resize: vertical;
+}
+
 .admin-box label,
 .share-panel label,
 .mod-search label,

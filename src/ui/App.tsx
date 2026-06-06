@@ -16,6 +16,7 @@ import {
   RefreshCcw,
   Search,
   Send,
+  Save,
   Settings,
   Trash2,
   Upload,
@@ -437,6 +438,21 @@ export function App() {
     });
     await loadManifest(savedCode, nextManifest);
     await refreshProfiles();
+  }
+
+  async function saveServerPackSettings() {
+    if (!manifest) return;
+    setError(null);
+    try {
+      await saveProfile(manifest);
+      setModNotice(
+        manifest.serverPack?.enabled
+          ? "Server installation settings saved. Publish the pack to make them available in Pelican."
+          : "Server installation disabled for this pack. Publish the pack to update Pelican."
+      );
+    } catch (err) {
+      setError(String(err));
+    }
   }
 
   async function installPack() {
@@ -926,6 +942,50 @@ export function App() {
                 placeholder="Needed only to publish"
               />
             </label>
+            {manifest && (
+              <div className="server-pack-settings">
+                <label className="checkbox-row">
+                  <input
+                    checked={manifest.serverPack?.enabled === true}
+                    onChange={(event) =>
+                      setManifest({
+                        ...manifest,
+                        serverPack: {
+                          enabled: event.target.checked,
+                          preservePaths: manifest.serverPack?.preservePaths ?? []
+                        }
+                      })
+                    }
+                    type="checkbox"
+                  />
+                  <span>Allow Pelican server installs</span>
+                </label>
+                <label>
+                  <span>Preserve paths, one per line</span>
+                  <textarea
+                    value={(manifest.serverPack?.preservePaths ?? []).join("\n")}
+                    onChange={(event) =>
+                      setManifest({
+                        ...manifest,
+                        serverPack: {
+                          enabled: manifest.serverPack?.enabled === true,
+                          preservePaths: event.target.value
+                            .split(/\r?\n/)
+                            .map((path) => path.trim())
+                            .filter(Boolean)
+                        }
+                      })
+                    }
+                    placeholder={"world/**\nserver.properties\nops.json\nwhitelist.json"}
+                    rows={5}
+                  />
+                </label>
+                <button className="secondary-button" onClick={() => void saveServerPackSettings()}>
+                  <Save size={16} />
+                  Save Server Settings
+                </button>
+              </div>
+            )}
             <button
               className="secondary-button"
               onClick={() => void uploadDefaultKeybinds()}
