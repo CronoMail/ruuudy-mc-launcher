@@ -1,0 +1,21 @@
+services:
+  pack-installer:
+    build:
+      context: .
+    container_name: ruuudy-pack-installer
+    restart: unless-stopped
+    environment:
+      PORT: "8790"
+      PACK_API_BASE: "${PACK_API_BASE:-https://launcher.ruuudy.in}"
+      PACK_INSTALLER_TOKEN: "${PACK_INSTALLER_TOKEN:?PACK_INSTALLER_TOKEN is required}"
+      PELICAN_SERVERS_ROOT: /minecraft/servers
+    volumes:
+      - /minecraft/servers:/minecraft/servers
+    networks:
+      - pelican
+
+networks:
+  pelican:
+    external: true
+    name: "${PELICAN_DOCKER_NETWORK:-pelican_default}"
+
