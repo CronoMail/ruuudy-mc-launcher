@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "pack-server": "node server/manifest-server.mjs",
+    "repair-server-pack": "node server/repair-server-pack.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"

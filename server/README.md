@@ -58,3 +58,17 @@ server/data/packs/<CODE>/manifest.json
 ```
 
 Back this folder up. It is the source of truth for profile codes.
+
+## Repair Existing Packs For Pelican
+
+Older published packs may exist as launcher/client packs without the optional `serverPack`
+metadata that the Pelican installer requires. Repair one pack in place with:
+
+```bash
+npm run repair-server-pack -- BENTOBOOB --dry-run
+npm run repair-server-pack -- BENTOBOOB
+```
+
+The repair enables server installs, preserves normal world/operator files, promotes likely
+shared CurseForge mod entries from `client` to `both`, and keeps obvious client assets such as
+resource packs, shader packs, screenshots, and `options.txt` client-only.

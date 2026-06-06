@@ -851,7 +851,7 @@ fn import_curseforge_zip_blocking(
         files: locked_files,
         overrides: override_files,
         default_options: None,
-        server_pack: None,
+        server_pack: Some(default_server_pack()),
     };
 
     emit_progress(
@@ -1456,7 +1456,7 @@ fn local_pending_override_for_profile_file(
         url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
         sha256: hex::encode(Sha256::digest(&bytes)),
         size: bytes.len() as u64,
-        side: None,
+        side: override_side_for_path(relative_path),
     })
 }
 
@@ -1611,7 +1611,7 @@ fn add_local_override_file(
         url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
         sha256,
         size,
-        side: None,
+        side: override_side_for_path(relative_path),
     });
 
     Ok(())
@@ -3041,13 +3041,27 @@ fn curseforge_download_to_manifest_file(
     size: u64,
 ) -> ManifestFile {
     ManifestFile::External {
-        side: "client".to_string(),
+        side: "both".to_string(),
         required: true,
         name: name.to_string(),
         filename: filename.to_string(),
         url: url.to_string(),
         sha256,
         size,
+    }
+}
+
+fn default_server_pack() -> ServerPack {
+    ServerPack {
+        enabled: true,
+        preserve_paths: vec![
+            "world/**".to_string(),
+            "server.properties".to_string(),
+            "ops.json".to_string(),
+            "whitelist.json".to_string(),
+            "banned-players.json".to_string(),
+            "banned-ips.json".to_string(),
+        ],
     }
 }
 
@@ -3139,11 +3153,25 @@ fn extract_overrides<R: Read + std::io::Seek>(
                 url: format!("{LOCAL_PENDING_URL_PREFIX}{relative}"),
                 sha256,
                 size,
-                side: None,
+                side: override_side_for_path(&relative),
             });
         }
     }
     Ok(overrides)
+}
+
+fn override_side_for_path(relative_path: &str) -> Option<String> {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    if normalized == "options.txt"
+        || normalized.starts_with("resourcepacks/")
+        || normalized.starts_with("shaderpacks/")
+        || normalized.starts_with("screenshots/")
+        || normalized.starts_with("logs/")
+    {
+        return Some("client".to_string());
+    }
+
+    None
 }
 
 fn is_resource_pack_zip(relative_path: &str) -> bool {
@@ -3590,6 +3618,7 @@ mod tests {
                 url,
                 sha256,
                 size,
+                side,
                 ..
             } => {
                 assert_eq!(name, "Cobblemon Additions");
@@ -3600,11 +3629,42 @@ mod tests {
                 );
                 assert_eq!(sha256, "1".repeat(64));
                 assert_eq!(size, 42);
+                assert_eq!(side, "both");
             }
             ManifestFile::Modrinth { .. } => {
                 panic!("CurseForge imports should lock as external files")
             }
         }
+    }
+
+    #[test]
+    fn server_pack_defaults_preserve_existing_world_files() {
+        let server_pack = default_server_pack();
+
+        assert!(server_pack.enabled);
+        assert!(server_pack.preserve_paths.contains(&"world/**".to_string()));
+        assert!(server_pack
+            .preserve_paths
+            .contains(&"server.properties".to_string()));
+        assert!(server_pack.preserve_paths.contains(&"ops.json".to_string()));
+    }
+
+    #[test]
+    fn override_side_marks_client_only_assets() {
+        assert_eq!(
+            override_side_for_path("resourcepacks/Biohazard.zip"),
+            Some("client".to_string())
+        );
+        assert_eq!(
+            override_side_for_path("shaderpacks/Complementary.zip"),
+            Some("client".to_string())
+        );
+        assert_eq!(
+            override_side_for_path("options.txt"),
+            Some("client".to_string())
+        );
+        assert_eq!(override_side_for_path("config/forge.toml"), None);
+        assert_eq!(override_side_for_path("kubejs/startup_scripts/server.js"), None);
     }
 
     #[test]
