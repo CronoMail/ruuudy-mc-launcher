@@ -14,13 +14,18 @@ LAUNCHER_PACK_AGENT_TOKEN=<same long random token used by the agent>
 
 ## Install
 
-Copy this directory to Pelican's persistent plugin directory, then run:
+Copy this directory to Pelican's persistent plugin directory without deleting Pelican-managed
+plugin state, then run:
 
 ```bash
+rsync -a deploy/pelican-plugin/launcher-pack-installer/ /minecraft/pelican/data/plugins/launcher-pack-installer/
 php artisan p:plugin:install
 php artisan migrate --force
 php artisan optimize:clear
 ```
 
-The plugin targets Pelican `v1.0.0-beta34` and should be rechecked after panel upgrades.
+After changing an already-installed plugin, copy the files the same way and run
+`php artisan p:plugin:update launcher-pack-installer --no-interaction`. Do not use
+`rsync --delete`; Pelican will mark the plugin as not installed until it is installed again.
 
+The plugin targets Pelican `v1.0.0-beta34` and should be rechecked after panel upgrades.
