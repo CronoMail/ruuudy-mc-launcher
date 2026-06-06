@@ -10,7 +10,9 @@ reachable from Pelican's internal Docker network.
 ```text
 PACK_INSTALLER_TOKEN=<long random secret>
 PACK_API_BASE=https://launcher.ruuudy.in
-PELICAN_DOCKER_NETWORK=<actual Pelican Docker network>
+PELICAN_DOCKER_NETWORK=streamrelay_default
+PELICAN_UID=999
+PELICAN_GID=987
 ```
 
 ## Deploy
@@ -23,4 +25,3 @@ docker exec ruuudy-pack-installer wget -qO- http://127.0.0.1:8790/health
 
 The agent refuses unsafe server IDs and paths, stages and verifies every file, then retains rollback
 data below `/minecraft/servers/.ruuudy-pack-installer/<server UUID>/rollbacks`.
-

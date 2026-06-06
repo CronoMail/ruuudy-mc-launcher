@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,6 +37,7 @@ function manifest() {
 async function startAgent() {
   const root = await mkdtemp(join(tmpdir(), "ruuudy-agent-"));
   await mkdir(join(root, SERVER_ID));
+  await writeFile(join(root, SERVER_ID, "unix_args.txt"), "@libraries/forge.txt");
   const agent = createAgentServer({
     token: "secret",
     serversRoot: root,
@@ -99,4 +100,3 @@ describe("installer agent", () => {
     expect(job.result.rollbackPath).toContain(".ruuudy-pack-installer");
   });
 });
-

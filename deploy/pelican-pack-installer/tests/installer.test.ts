@@ -38,6 +38,7 @@ function fixtureManifest(contents: Record<string, string>) {
 async function makeRoot() {
   const root = await mkdtemp(join(tmpdir(), "ruuudy-installer-"));
   await mkdir(join(root, SERVER_ID), { recursive: true });
+  await writeFile(join(root, SERVER_ID, "unix_args.txt"), "@libraries/forge.txt");
   return root;
 }
 
@@ -51,7 +52,6 @@ describe("installFromManifest", () => {
   it("fresh wipe replaces the server and creates rollback data", async () => {
     const root = await makeRoot();
     await writeFile(join(root, SERVER_ID, "old.txt"), "old");
-    await writeFile(join(root, SERVER_ID, "unix_args.txt"), "@libraries/forge.txt");
 
     const result = await installFromManifest({
       serversRoot: root,

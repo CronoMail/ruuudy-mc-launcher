@@ -90,6 +90,20 @@ export function createAgentServer({
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/v1/rollbacks") {
+        const body = await readJson(request);
+        if (typeof body?.serverId !== "string" || typeof body?.rollbackPath !== "string") {
+          throw httpError(400, "serverId and rollbackPath are required.");
+        }
+        const result = await rollbackInstallation({
+          serversRoot,
+          serverId: body.serverId,
+          rollbackPath: body.rollbackPath
+        });
+        sendJson(response, 200, { ok: true, result });
+        return;
+      }
+
       sendJson(response, 404, { error: "Not found" });
     } catch (error) {
       sendJson(response, error.statusCode ?? 500, {
@@ -203,4 +217,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`Ruuudy Pelican pack installer listening on :${port}`);
   });
 }
-

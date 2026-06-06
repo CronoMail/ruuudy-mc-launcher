@@ -4,6 +4,7 @@ services:
       context: .
     container_name: ruuudy-pack-installer
     restart: unless-stopped
+    user: "${PELICAN_UID:-999}:${PELICAN_GID:-987}"
     environment:
       PORT: "8790"
       PACK_API_BASE: "${PACK_API_BASE:-https://launcher.ruuudy.in}"
@@ -17,5 +18,4 @@ services:
 networks:
   pelican:
     external: true
-    name: "${PELICAN_DOCKER_NETWORK:-pelican_default}"
-
+    name: "${PELICAN_DOCKER_NETWORK:-streamrelay_default}"

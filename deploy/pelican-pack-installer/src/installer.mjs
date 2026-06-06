@@ -52,6 +52,7 @@ export async function installFromManifest({
   validateServerManifest(manifest);
 
   const livePath = resolveServerPath(serversRoot, serverId);
+  await validateLoaderRuntime(livePath, manifest);
   const operationRoot = resolveInside(serversRoot, `.ruuudy-pack-installer/${serverId}`);
   const jobId = `${Date.now()}-${randomUUID()}`;
   const stagePath = join(operationRoot, "staging", jobId);
@@ -232,4 +233,26 @@ function validateServerManifest(manifest) {
       throw new Error(`Missing hash for ${file.path}.`);
     }
   }
+}
+
+async function validateLoaderRuntime(livePath, manifest) {
+  const loader = manifest.loader?.type;
+  const candidates =
+    loader === "forge" || loader === "neoforge"
+      ? ["unix_args.txt"]
+      : loader === "fabric"
+        ? ["fabric-server-launch.jar", "server.jar"]
+        : ["server.jar"];
+
+  for (const candidate of candidates) {
+    try {
+      const details = await stat(join(livePath, candidate));
+      if (details.isFile()) return;
+    } catch {
+      // Try the next compatible runtime marker.
+    }
+  }
+  throw new Error(
+    `The server does not have a compatible ${loader ?? "Minecraft"} runtime. Reinstall the matching Pelican egg before installing this pack.`
+  );
 }
