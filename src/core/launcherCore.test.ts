@@ -67,6 +67,24 @@ describe("normalizePackCode", () => {
 });
 
 describe("buildInstallPlan", () => {
+  it("keeps the desktop install plan unchanged when optional server metadata is present", () => {
+    const withServerMetadata: PackManifest = {
+      ...manifest,
+      serverPack: {
+        enabled: true,
+        preservePaths: ["world/**", "server.properties"]
+      },
+      overrides: manifest.overrides.map((override) => ({
+        ...override,
+        side: "both"
+      }))
+    };
+
+    expect(
+      buildInstallPlan(withServerMetadata, null, { existingFiles: [] })
+    ).toEqual(buildInstallPlan(manifest, null, { existingFiles: [] }));
+  });
+
   it("downloads missing manifest files and removes only previously managed stale files", () => {
     const localState: LocalInstallState = {
       packId: "fakersbob",

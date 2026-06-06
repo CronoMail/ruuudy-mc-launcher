@@ -58,6 +58,8 @@ struct PackManifest {
     overrides: Vec<ManifestOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_options: Option<ManifestOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    server_pack: Option<ServerPack>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +73,14 @@ struct Loader {
 struct Server {
     address: String,
     port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerPack {
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    preserve_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +116,8 @@ struct ManifestOverride {
     url: String,
     sha256: String,
     size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    side: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -839,6 +851,7 @@ fn import_curseforge_zip_blocking(
         files: locked_files,
         overrides: override_files,
         default_options: None,
+        server_pack: None,
     };
 
     emit_progress(
@@ -988,6 +1001,7 @@ fn create_blank_profile(input: ManualProfileInput) -> LauncherResult<ProfileSumm
         files: Vec::new(),
         overrides: Vec::new(),
         default_options: None,
+        server_pack: None,
     };
     validate_manifest(&manifest)?;
     save_profile_manifest(code, manifest)
@@ -1160,6 +1174,7 @@ fn upload_default_options_blocking(
         url,
         sha256,
         size,
+        side: None,
     });
     publish_manifest.version = format!("manual-{}", unix_timestamp());
     validate_manifest(&publish_manifest)?;
@@ -1441,6 +1456,7 @@ fn local_pending_override_for_profile_file(
         url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
         sha256: hex::encode(Sha256::digest(&bytes)),
         size: bytes.len() as u64,
+        side: None,
     })
 }
 
@@ -1595,6 +1611,7 @@ fn add_local_override_file(
         url: format!("{LOCAL_PENDING_URL_PREFIX}{relative_path}"),
         sha256,
         size,
+        side: None,
     });
 
     Ok(())
@@ -2092,6 +2109,7 @@ fn upload_unrepresented_managed_files(
             url,
             sha256,
             size,
+            side: None,
         });
         uploaded_files += 1;
     }
@@ -2157,6 +2175,7 @@ fn upload_unrepresented_managed_files(
             url,
             sha256,
             size,
+            side: None,
         });
         represented.insert(relative_path);
         uploaded_files += 1;
@@ -3120,6 +3139,7 @@ fn extract_overrides<R: Read + std::io::Seek>(
                 url: format!("{LOCAL_PENDING_URL_PREFIX}{relative}"),
                 sha256,
                 size,
+                side: None,
             });
         }
     }
@@ -3611,7 +3631,9 @@ mod tests {
                     .to_string(),
                 sha256: "a".repeat(64),
                 size: 42,
+                side: None,
             }),
+            server_pack: None,
         };
 
         let first_install = build_install_plan(&manifest, None);
@@ -3669,8 +3691,10 @@ mod tests {
                 url: "local-pending://mods/alpha.jar".to_string(),
                 sha256: "0".repeat(64),
                 size: 1,
+                side: None,
             }],
             default_options: None,
+            server_pack: None,
         };
 
         let next_manifest =
@@ -3727,6 +3751,7 @@ mod tests {
             files: Vec::new(),
             overrides: Vec::new(),
             default_options: None,
+            server_pack: None,
         };
 
         let next_manifest =
@@ -3792,6 +3817,7 @@ mod tests {
             files: Vec::new(),
             overrides: Vec::new(),
             default_options: None,
+            server_pack: None,
         };
         let profile_dir = profile_dir(&manifest).unwrap();
 
@@ -3856,6 +3882,7 @@ mod tests {
             files: Vec::new(),
             overrides: Vec::new(),
             default_options: None,
+            server_pack: None,
         };
 
         let next_manifest =
@@ -3911,8 +3938,10 @@ mod tests {
                 url: "local-pending://shaderpacks/Complementary.zip".to_string(),
                 sha256: "3".repeat(64),
                 size: 10,
+                side: None,
             }],
             default_options: None,
+            server_pack: None,
         };
 
         sync_shader_pack_options(&profile_dir, &manifest, None).unwrap();
@@ -3962,8 +3991,10 @@ mod tests {
                 url: "local-pending://resourcepacks/RCT.zip".to_string(),
                 sha256: "1".repeat(64),
                 size: 10,
+                side: None,
             }],
             default_options: None,
+            server_pack: None,
         };
 
         sync_resource_pack_options(&profile_dir, &manifest, None).unwrap();
@@ -4013,8 +4044,10 @@ mod tests {
                 url: "local-pending://resourcepacks/New.zip".to_string(),
                 sha256: "2".repeat(64),
                 size: 10,
+                side: None,
             }],
             default_options: None,
+            server_pack: None,
         };
         let previous_state = LocalInstallState {
             pack_id: "fakersbob".to_string(),
@@ -4061,6 +4094,7 @@ mod tests {
             files: Vec::new(),
             overrides: Vec::new(),
             default_options: None,
+            server_pack: None,
         };
         let profile_dir = profile_dir(&manifest).unwrap();
         fs::create_dir_all(profile_dir.join(".ruuudy-launcher")).unwrap();

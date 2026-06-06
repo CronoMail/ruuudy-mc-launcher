@@ -1,5 +1,5 @@
 export type LoaderType = "vanilla" | "fabric" | "forge" | "neoforge";
-export type FileSide = "client" | "server" | "both";
+export type FileSide = "client" | "server" | "both" | "excluded";
 
 export type PackManifest = {
   schemaVersion: 1;
@@ -18,6 +18,10 @@ export type PackManifest = {
   files: ManifestFile[];
   overrides: ManifestOverride[];
   defaultOptions?: ManifestOverride;
+  serverPack?: {
+    enabled: boolean;
+    preservePaths?: string[];
+  };
 };
 
 export type ModrinthManifestFile = {
@@ -49,6 +53,7 @@ export type ManifestOverride = {
   url: string;
   sha256: string;
   size: number;
+  side?: FileSide;
 };
 
 export type LocalInstallState = {

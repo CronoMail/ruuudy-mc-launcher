@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildServerManifest,
+  validateDistributionMetadata
+} from "./manifest-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8787);
@@ -38,6 +42,20 @@ async function route(request, response) {
     const code = normalizeCode(publicMatch[1]);
     const manifest = await readPackManifest(code);
     sendJson(response, 200, manifest);
+    return;
+  }
+
+  const serverManifestMatch = url.pathname.match(
+    /^\/api\/packs\/([A-Za-z0-9_-]+)\/server-manifest$/
+  );
+  if (request.method === "GET" && serverManifestMatch) {
+    const code = normalizeCode(serverManifestMatch[1]);
+    const manifest = await readPackManifest(code);
+    sendJson(
+      response,
+      200,
+      buildServerManifest(manifest, { origin: requestOrigin(request), code })
+    );
     return;
   }
 
@@ -215,6 +233,8 @@ function validateManifest(manifest) {
   if (!Array.isArray(manifest.files) || !Array.isArray(manifest.overrides)) {
     throw httpError(400, "Manifest files and overrides must be arrays.");
   }
+
+  validateDistributionMetadata(manifest);
 }
 
 function sendJson(response, statusCode, payload) {
@@ -243,4 +263,12 @@ function readSecret(valueName, fileName) {
   }
 
   return readFileSync(filePath, "utf8").trim();
+}
+
+function requestOrigin(request) {
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const proto = Array.isArray(forwardedProto)
+    ? forwardedProto[0]
+    : forwardedProto?.split(",")[0]?.trim() || "http";
+  return `${proto}://${request.headers.host ?? "localhost"}`;
 }
