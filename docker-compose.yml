@@ -12,6 +12,8 @@ services:
       PACK_MAX_UPLOAD_BYTES: ${PACK_MAX_UPLOAD_BYTES:-536870912}
     volumes:
       - ./server/manifest-server.mjs:/app/server/manifest-server.mjs:ro
+      - ./server/manifest-contract.mjs:/app/server/manifest-contract.mjs:ro
+      - ./server/repair-server-pack.mjs:/app/server/repair-server-pack.mjs:ro
       - ./server/data:/app/server/data
       - ./admin-token.txt:/run/secrets/pack_admin_token:ro
     healthcheck:
