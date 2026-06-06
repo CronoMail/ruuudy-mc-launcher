@@ -50,7 +50,7 @@ class LauncherPackPage extends Page
     public function previewPack(): void
     {
         try {
-            $this->preview = app(LauncherPackClient::class)->manifest($this->normalizedCode());
+            $this->preview = $this->summarizeManifest(app(LauncherPackClient::class)->manifest($this->normalizedCode()));
         } catch (\Throwable $exception) {
             $this->preview = null;
             Notification::make()->title('Pack unavailable')->body($exception->getMessage())->danger()->send();
@@ -108,5 +108,19 @@ class LauncherPackPage extends Page
             throw new \RuntimeException('Pack code may only contain letters, numbers, dashes, and underscores.');
         }
         return $code;
+    }
+
+    private function summarizeManifest(array $manifest): array
+    {
+        return [
+            'packName' => $manifest['packName'] ?? $this->normalizedCode(),
+            'version' => $manifest['version'] ?? 'unknown',
+            'minecraftVersion' => $manifest['minecraftVersion'] ?? 'unknown',
+            'loader' => [
+                'type' => $manifest['loader']['type'] ?? 'unknown',
+                'version' => $manifest['loader']['version'] ?? 'unknown',
+            ],
+            'fileCount' => count($manifest['files'] ?? []),
+        ];
     }
 }

@@ -10,11 +10,12 @@
             </div>
 
             @if($preview)
-                <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-                    <div><div class="text-gray-500">Pack</div><div class="font-semibold">{{ $preview['packName'] }}</div></div>
-                    <div><div class="text-gray-500">Version</div><div class="font-semibold">{{ $preview['version'] }}</div></div>
-                    <div><div class="text-gray-500">Minecraft</div><div class="font-semibold">{{ $preview['minecraftVersion'] }}</div></div>
-                    <div><div class="text-gray-500">Loader</div><div class="font-semibold">{{ ucfirst($preview['loader']['type']) }} {{ $preview['loader']['version'] }}</div></div>
+                <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-sm">
+                    <div><div class="text-gray-500">Pack</div><div class="font-semibold">{{ $preview['packName'] ?? 'Unknown' }}</div></div>
+                    <div><div class="text-gray-500">Version</div><div class="font-semibold">{{ $preview['version'] ?? 'Unknown' }}</div></div>
+                    <div><div class="text-gray-500">Minecraft</div><div class="font-semibold">{{ $preview['minecraftVersion'] ?? 'Unknown' }}</div></div>
+                    <div><div class="text-gray-500">Loader</div><div class="font-semibold">{{ ucfirst($preview['loader']['type'] ?? 'unknown') }} {{ $preview['loader']['version'] ?? '' }}</div></div>
+                    <div><div class="text-gray-500">Files</div><div class="font-semibold">{{ number_format($preview['fileCount'] ?? 0) }}</div></div>
                 </div>
             @endif
         </x-filament::section>
