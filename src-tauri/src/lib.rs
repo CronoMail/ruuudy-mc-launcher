@@ -3041,13 +3041,50 @@ fn curseforge_download_to_manifest_file(
     size: u64,
 ) -> ManifestFile {
     ManifestFile::External {
-        side: "both".to_string(),
+        side: mod_distribution_side(filename),
         required: true,
         name: name.to_string(),
         filename: filename.to_string(),
         url: url.to_string(),
         sha256,
         size,
+    }
+}
+
+fn mod_distribution_side(filename: &str) -> String {
+    let normalized = filename.to_lowercase();
+    let client_only_markers = [
+        "optifine",
+        "iris",
+        "oculus",
+        "embeddium",
+        "rubidium",
+        "sodium",
+        "xaero",
+        "journeymap",
+        "jei",
+        "jade",
+        "wthit",
+        "mouse-tweaks",
+        "mousetweaks",
+        "sound-physics",
+        "chat-heads",
+        "chatheads",
+        "fallingleaves",
+        "prism",
+        "justenoughadvancements",
+        "legendarytooltips",
+        "colorwheel",
+        "continuity",
+        "better-third-person",
+    ];
+    if client_only_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        "client".to_string()
+    } else {
+        "both".to_string()
     }
 }
 
@@ -3635,6 +3672,24 @@ mod tests {
                 panic!("CurseForge imports should lock as external files")
             }
         }
+    }
+
+    #[test]
+    fn curseforge_client_only_mods_stay_out_of_server_manifests() {
+        for filename in [
+            "jei-1.20.1-forge-15.20.0.129.jar",
+            "Prism-1.20.1-forge-1.0.5.jar",
+            "JustEnoughAdvancements-1.20.1-5.0.1.jar",
+            "LegendaryTooltips-1.20.1-forge-1.4.5.jar",
+            "colorwheel-forge-1.2.0+mc1.20.1.jar",
+            "continuity-3.0.0+1.20.1.forge.jar",
+        ] {
+            assert_eq!(mod_distribution_side(filename), "client");
+        }
+        assert_eq!(
+            mod_distribution_side("YungsBetterMineshafts-1.20-Forge-4.0.4.jar"),
+            "both"
+        );
     }
 
     #[test]

@@ -76,6 +76,7 @@ describe("validateDistributionMetadata", () => {
   });
 });
 
+
 describe("buildServerManifest", () => {
   it("filters client-only content and defaults override side to both", () => {
     const result = buildServerManifest(baseManifest, {
@@ -103,4 +104,3 @@ describe("buildServerManifest", () => {
     ).toThrow(/not enabled/i);
   });
 });
-

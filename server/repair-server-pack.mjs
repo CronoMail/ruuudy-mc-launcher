@@ -34,7 +34,9 @@ manifest.serverPack = {
 };
 
 for (const file of manifest.files ?? []) {
-  if (file.side === "client" && shouldPromoteFileToServer(file)) {
+  if (isKnownClientOnlyFile(file)) {
+    file.side = "client";
+  } else if (file.side === "client" && shouldPromoteFileToServer(file)) {
     file.side = "both";
   }
 }
@@ -94,7 +96,24 @@ function shouldPromoteFileToServer(file) {
     .join(" ")
     .toLowerCase();
 
-  return ![
+  return !isKnownClientOnlyText(text);
+}
+
+function isKnownClientOnlyFile(file) {
+  const text = [
+    file.filename ?? "",
+    file.name ?? "",
+    file.url ?? "",
+    file.projectId ?? "",
+    file.versionId ?? ""
+  ]
+    .join(" ")
+    .toLowerCase();
+  return isKnownClientOnlyText(text);
+}
+
+function isKnownClientOnlyText(text) {
+  return [
     "resourcepack",
     "resource-pack",
     "shaderpack",
@@ -115,6 +134,12 @@ function shouldPromoteFileToServer(file) {
     "chat heads",
     "fallingleaves",
     "prism",
+    "justenoughadvancements",
+    "just enough advancements",
+    "legendarytooltips",
+    "legendary tooltips",
+    "colorwheel",
+    "continuity",
     "better third person"
   ].some((marker) => text.includes(marker));
 }
