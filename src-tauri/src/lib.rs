@@ -3099,6 +3099,12 @@ fn mod_distribution_side(filename: &str) -> String {
         "clientcrafting",
         "foodeffecttooltips",
         "konkrete",
+        "watermedia",
+        "shouldersurfing",
+        "shoulder-surfing",
+        "blur-forge",
+        "camerapture",
+        "craftpresence",
     ];
     if client_only_markers
         .iter()
@@ -3710,6 +3716,12 @@ mod tests {
             "fancymenu_forge_3.7.0_MC_1.20.1.jar",
             "visual_keybinder-1.20.1-0.1.10.jar",
             "inventoryhud.forge.1.20.1-3.4.26.jar",
+            "watermedia-2.1.37.jar",
+            "watermedia_youtube_plugin-2.1.1.jar",
+            "ShoulderSurfing-Forge-1.20.1-4.18.2.jar",
+            "blur-forge-3.1.1.jar",
+            "Camerapture-1.10.8+mc1.20.1-forge.jar",
+            "CraftPresence-2.7.0+1.20.1-forge.jar",
         ] {
             assert_eq!(mod_distribution_side(filename), "client");
         }

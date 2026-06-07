@@ -164,7 +164,13 @@ function isKnownClientOnlyText(text) {
     "clean tooltips",
     "clientcrafting",
     "foodeffecttooltips",
-    "konkrete"
+    "konkrete",
+    "watermedia",
+    "shouldersurfing",
+    "shoulder surfing",
+    "blur-forge",
+    "camerapture",
+    "craftpresence"
   ].some((marker) => text.includes(marker));
 }
 
