@@ -3077,6 +3077,28 @@ fn mod_distribution_side(filename: &str) -> String {
         "colorwheel",
         "continuity",
         "better-third-person",
+        "entity_texture_features",
+        "entity-texture-features",
+        "entity_model_features",
+        "entity-model-features",
+        "visual_keybinder",
+        "visual-keybinder",
+        "fancymenu",
+        "bhmenu",
+        "drippyloadingscreen",
+        "inventoryhud",
+        "notenoughanimations",
+        "screenshot_viewer",
+        "screenshot-viewer",
+        "controlling",
+        "searchables",
+        "catalogue",
+        "configured",
+        "clean_tooltips",
+        "clean-tooltips",
+        "clientcrafting",
+        "foodeffecttooltips",
+        "konkrete",
     ];
     if client_only_markers
         .iter()
@@ -3683,6 +3705,11 @@ mod tests {
             "LegendaryTooltips-1.20.1-forge-1.4.5.jar",
             "colorwheel-forge-1.2.0+mc1.20.1.jar",
             "continuity-3.0.0+1.20.1.forge.jar",
+            "entity_texture_features_1.20.1-forge-7.0.8.jar",
+            "BHMenu-Forge-1.20.1-2.4.3.jar",
+            "fancymenu_forge_3.7.0_MC_1.20.1.jar",
+            "visual_keybinder-1.20.1-0.1.10.jar",
+            "inventoryhud.forge.1.20.1-3.4.26.jar",
         ] {
             assert_eq!(mod_distribution_side(filename), "client");
         }

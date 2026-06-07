@@ -140,7 +140,31 @@ function isKnownClientOnlyText(text) {
     "legendary tooltips",
     "colorwheel",
     "continuity",
-    "better third person"
+    "better third person",
+    "entity texture features",
+    "entity_texture_features",
+    "entity model features",
+    "entity_model_features",
+    "visual keybinder",
+    "visual_keybinder",
+    "fancymenu",
+    "bhmenu",
+    "drippyloadingscreen",
+    "inventoryhud",
+    "notenoughanimations",
+    "screenshot_viewer",
+    "screenshot viewer",
+    "mousetweaks",
+    "mouse tweaks",
+    "controlling",
+    "searchables",
+    "catalogue",
+    "configured",
+    "clean_tooltips",
+    "clean tooltips",
+    "clientcrafting",
+    "foodeffecttooltips",
+    "konkrete"
   ].some((marker) => text.includes(marker));
 }
 
