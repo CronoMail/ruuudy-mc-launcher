@@ -168,6 +168,8 @@ function isKnownClientOnlyText(text) {
     "watermedia",
     "shouldersurfing",
     "shoulder surfing",
+    "tp_shooting",
+    "tp-shooting",
     "blur-forge",
     "camerapture",
     "craftpresence"
