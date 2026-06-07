@@ -95,6 +95,26 @@ describe("buildServerManifest", () => {
     expect(JSON.stringify(result)).not.toContain("options.txt");
   });
 
+  it("filters known client-only override mods from server manifests", () => {
+    const manifest = buildServerManifest(
+      {
+        name: "Client override test",
+        version: "1",
+        minecraftVersion: "1.20.1",
+        loader: { type: "forge", version: "47.4.0" },
+        files: [],
+        overrides: [
+          { path: "mods/entity_texture_features_1.20.1-forge-7.0.8.jar", sha256: "a", size: 1, side: "client" },
+          { path: "mods/server-content.jar", sha256: "b", size: 1, side: "both" }
+        ],
+        serverPack: { enabled: true, preservePaths: [] }
+      },
+      { origin: "https://launcher.example", code: "TEST" }
+    );
+
+    expect(manifest.files.map((file) => file.path)).toEqual(["mods/server-content.jar"]);
+  });
+
   it("refuses packs that are not explicitly enabled for servers", () => {
     expect(() =>
       buildServerManifest(

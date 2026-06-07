@@ -42,7 +42,7 @@ for (const file of manifest.files ?? []) {
 }
 
 for (const override of manifest.overrides ?? []) {
-  if (override.side === undefined && shouldMarkOverrideClientOnly(override.path)) {
+  if (shouldMarkOverrideClientOnly(override.path)) {
     override.side = "client";
   }
 }
@@ -174,7 +174,8 @@ function shouldMarkOverrideClientOnly(path) {
     normalized === "options.txt" ||
     normalized.startsWith("resourcepacks/") ||
     normalized.startsWith("shaderpacks/") ||
-    normalized.startsWith("screenshots/")
+    normalized.startsWith("screenshots/") ||
+    (normalized.startsWith("mods/") && isKnownClientOnlyText(normalized))
   );
 }
 
