@@ -126,6 +126,7 @@ function isKnownClientOnlyText(text) {
     "sodium",
     "xaero",
     "journeymap",
+    "jeiintegration",
     "jade",
     "wthit",
     "mouse tweaks",

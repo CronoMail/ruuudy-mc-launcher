@@ -3062,6 +3062,7 @@ fn mod_distribution_side(filename: &str) -> String {
         "sodium",
         "xaero",
         "journeymap",
+        "jeiintegration",
         "jade",
         "wthit",
         "mouse-tweaks",
@@ -3705,6 +3706,7 @@ mod tests {
     fn curseforge_client_only_mods_stay_out_of_server_manifests() {
         for filename in [
             "Prism-1.20.1-forge-1.0.5.jar",
+            "jeiintegration_1.20.1-10.0.0.jar",
             "LegendaryTooltips-1.20.1-forge-1.4.5.jar",
             "colorwheel-forge-1.2.0+mc1.20.1.jar",
             "continuity-3.0.0+1.20.1.forge.jar",
