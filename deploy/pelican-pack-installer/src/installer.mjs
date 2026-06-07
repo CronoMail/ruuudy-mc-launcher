@@ -1,12 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   cp,
+  lstat,
   mkdir,
   readFile,
   readdir,
   rename,
+  readlink,
   rm,
   stat,
+  symlink,
   writeFile
 } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
@@ -192,8 +195,13 @@ async function copyPreservedPaths(sourceRoot, targetRoot, patterns) {
       continue;
     }
     const target = join(targetRoot, relativePath);
+    const details = await lstat(source);
     await mkdir(dirname(target), { recursive: true });
-    await cp(source, target, { force: true });
+    if (details.isSymbolicLink()) {
+      await symlink(await readlink(source), target);
+    } else {
+      await cp(source, target, { force: true });
+    }
   }
 }
 
@@ -203,7 +211,7 @@ async function walkFiles(root) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) {
       files.push(...(await walkFiles(path)));
-    } else if (entry.isFile()) {
+    } else if (entry.isFile() || entry.isSymbolicLink()) {
       files.push(path);
     }
   }

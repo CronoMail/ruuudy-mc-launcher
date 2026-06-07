@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -42,6 +42,23 @@ async function makeRoot() {
   return root;
 }
 
+async function makeForgeSymlinkRuntimeRoot() {
+  const root = await mkdtemp(join(tmpdir(), "ruuudy-installer-"));
+  const serverRoot = join(root, SERVER_ID);
+  await mkdir(join(serverRoot, "libraries/net/minecraftforge/forge/1.20.1-47.4.0"), {
+    recursive: true
+  });
+  await writeFile(
+    join(serverRoot, "libraries/net/minecraftforge/forge/1.20.1-47.4.0/unix_args.txt"),
+    "@libraries/forge.txt"
+  );
+  await symlink(
+    "libraries/net/minecraftforge/forge/1.20.1-47.4.0/unix_args.txt",
+    join(serverRoot, "unix_args.txt")
+  );
+  return root;
+}
+
 describe("resolveServerPath", () => {
   it("rejects traversal and non-UUID server IDs", () => {
     expect(() => resolveServerPath("/minecraft/servers", "../etc")).toThrow(/uuid/i);
@@ -66,6 +83,22 @@ describe("installFromManifest", () => {
     );
     await expect(readFile(join(root, SERVER_ID, "old.txt"), "utf8")).rejects.toThrow();
     expect(await readFile(join(result.rollbackPath, "old.txt"), "utf8")).toBe("old");
+  });
+
+  it.skipIf(process.platform === "win32")("preserves Forge unix_args symlinks during a wipe", async () => {
+    const root = await makeForgeSymlinkRuntimeRoot();
+
+    await installFromManifest({
+      serversRoot: root,
+      serverId: SERVER_ID,
+      manifest: fixtureManifest({ "mods/new.jar": "new" }),
+      mode: "wipe"
+    });
+
+    expect((await lstat(join(root, SERVER_ID, "unix_args.txt"))).isSymbolicLink()).toBe(true);
+    expect(await readFile(join(root, SERVER_ID, "unix_args.txt"), "utf8")).toBe(
+      "@libraries/forge.txt"
+    );
   });
 
   it("preserve mode keeps matching server data and removes stale files", async () => {
