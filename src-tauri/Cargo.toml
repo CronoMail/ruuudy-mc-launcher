@@ -1,6 +1,6 @@
 [package]
 name = "ruuudy_mc_launcher"
-version = "0.1.19"
+version = "0.1.20"
 description = "Ruuudy Minecraft pack launcher"
 authors = ["Ruuudy"]
 edition = "2021"
