@@ -126,7 +126,6 @@ function isKnownClientOnlyText(text) {
     "sodium",
     "xaero",
     "journeymap",
-    "jei",
     "jade",
     "wthit",
     "mouse tweaks",
@@ -134,8 +133,6 @@ function isKnownClientOnlyText(text) {
     "chat heads",
     "fallingleaves",
     "prism",
-    "justenoughadvancements",
-    "just enough advancements",
     "legendarytooltips",
     "legendary tooltips",
     "colorwheel",
@@ -171,7 +168,6 @@ function isKnownClientOnlyText(text) {
     "tp_shooting",
     "tp-shooting",
     "blur-forge",
-    "camerapture",
     "craftpresence"
   ].some((marker) => text.includes(marker));
 }

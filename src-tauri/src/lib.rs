@@ -3062,7 +3062,6 @@ fn mod_distribution_side(filename: &str) -> String {
         "sodium",
         "xaero",
         "journeymap",
-        "jei",
         "jade",
         "wthit",
         "mouse-tweaks",
@@ -3072,7 +3071,6 @@ fn mod_distribution_side(filename: &str) -> String {
         "chatheads",
         "fallingleaves",
         "prism",
-        "justenoughadvancements",
         "legendarytooltips",
         "colorwheel",
         "continuity",
@@ -3105,7 +3103,6 @@ fn mod_distribution_side(filename: &str) -> String {
         "tp_shooting",
         "tp-shooting",
         "blur-forge",
-        "camerapture",
         "craftpresence",
     ];
     if client_only_markers
@@ -3707,9 +3704,7 @@ mod tests {
     #[test]
     fn curseforge_client_only_mods_stay_out_of_server_manifests() {
         for filename in [
-            "jei-1.20.1-forge-15.20.0.129.jar",
             "Prism-1.20.1-forge-1.0.5.jar",
-            "JustEnoughAdvancements-1.20.1-5.0.1.jar",
             "LegendaryTooltips-1.20.1-forge-1.4.5.jar",
             "colorwheel-forge-1.2.0+mc1.20.1.jar",
             "continuity-3.0.0+1.20.1.forge.jar",
@@ -3723,7 +3718,6 @@ mod tests {
             "ShoulderSurfing-Forge-1.20.1-4.18.2.jar",
             "tp_shooting-1.20.1-5.1.1+tacz1.1.6-all.jar",
             "blur-forge-3.1.1.jar",
-            "Camerapture-1.10.8+mc1.20.1-forge.jar",
             "CraftPresence-2.7.0+1.20.1-forge.jar",
         ] {
             assert_eq!(mod_distribution_side(filename), "client");
@@ -3732,6 +3726,13 @@ mod tests {
             mod_distribution_side("YungsBetterMineshafts-1.20-Forge-4.0.4.jar"),
             "both"
         );
+        for filename in [
+            "jei-1.20.1-forge-15.20.0.129.jar",
+            "JustEnoughAdvancements-1.20.1-5.0.1.jar",
+            "Camerapture-1.10.8+mc1.20.1-forge.jar",
+        ] {
+            assert_eq!(mod_distribution_side(filename), "both");
+        }
     }
 
     #[test]
