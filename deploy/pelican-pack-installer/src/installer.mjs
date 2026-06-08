@@ -241,6 +241,29 @@ function validateServerManifest(manifest) {
       throw new Error(`Missing hash for ${file.path}.`);
     }
   }
+  validateKnownServerDependencies(manifest.files);
+}
+
+function validateKnownServerDependencies(files) {
+  const modFilenames = new Set(
+    files
+      .map((file) => safeRelativePath(file.path))
+      .filter((path) => path.toLowerCase().startsWith("mods/"))
+      .map((path) => basename(path).toLowerCase())
+  );
+
+  if (hasModFilename(modFilenames, "itemborders") && !hasModFilename(modFilenames, "prism")) {
+    throw new Error("Server manifest includes ItemBorders but is missing required Prism mod.");
+  }
+}
+
+function hasModFilename(modFilenames, marker) {
+  for (const filename of modFilenames) {
+    if (filename.includes(marker)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function validateLoaderRuntime(livePath, manifest) {

@@ -709,6 +709,24 @@ select:focus-visible {
   background: #101011;
 }
 
+.publish-progress {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.55rem;
+}
+
+.publish-progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.publish-progress-header strong {
+  color: var(--text);
+}
+
 .health-panel {
   display: grid;
   gap: 0.85rem;

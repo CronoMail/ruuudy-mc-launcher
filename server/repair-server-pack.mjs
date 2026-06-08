@@ -133,7 +133,6 @@ function isKnownClientOnlyText(text) {
     "sound physics",
     "chat heads",
     "fallingleaves",
-    "prism",
     "legendarytooltips",
     "legendary tooltips",
     "colorwheel",

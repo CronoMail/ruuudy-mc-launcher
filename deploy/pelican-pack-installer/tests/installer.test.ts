@@ -140,6 +140,24 @@ describe("installFromManifest", () => {
     expect(await readFile(join(root, SERVER_ID, "old.txt"), "utf8")).toBe("old");
   });
 
+  it("rejects a known missing server-side mod dependency before mutating live files", async () => {
+    const root = await makeRoot();
+    await writeFile(join(root, SERVER_ID, "old.txt"), "old");
+
+    await expect(
+      installFromManifest({
+        serversRoot: root,
+        serverId: SERVER_ID,
+        manifest: fixtureManifest({
+          "mods/ItemBorders-1.20.1-forge-1.2.2.jar": "itemborders"
+        }),
+        mode: "wipe"
+      })
+    ).rejects.toThrow(/prism/i);
+
+    expect(await readFile(join(root, SERVER_ID, "old.txt"), "utf8")).toBe("old");
+  });
+
   it("can restore the previous server from rollback", async () => {
     const root = await makeRoot();
     await writeFile(join(root, SERVER_ID, "old.txt"), "old");

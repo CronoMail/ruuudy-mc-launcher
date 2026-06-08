@@ -18,6 +18,7 @@ use zip::ZipArchive;
 
 const FAKERSBOB_MANIFEST: &str = include_str!("../packs/fakersbob/manifest.json");
 const LOCAL_PENDING_URL_PREFIX: &str = "local-pending://";
+const MAX_NEWLINE_NORMALIZATION_BYTES: u64 = 1024 * 1024;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -242,6 +243,15 @@ struct PublishSummary {
     manifest_url: String,
     uploaded_files: usize,
     manifest: PackManifest,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishProgressEvent {
+    stage: String,
+    message: String,
+    current: usize,
+    total: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -508,6 +518,9 @@ fn get_pack_health_blocking(manifest: PackManifest) -> LauncherResult<PackHealth
         if let Some(expected_size) = item.size {
             let actual_size = fs::metadata(&target)?.len();
             if actual_size != expected_size {
+                if managed_text_file_matches_after_newline_normalization(&target, &item)? {
+                    continue;
+                }
                 size_mismatches += 1;
                 issues.push(PackHealthIssue {
                     severity: "error".to_string(),
@@ -1048,19 +1061,21 @@ fn sync_manifest_with_profile_folder_blocking(
 
 #[tauri::command]
 async fn publish_profile(
+    app: AppHandle,
     api_base: String,
     admin_token: String,
     code: String,
     manifest: PackManifest,
 ) -> LauncherResult<PublishSummary> {
     tauri::async_runtime::spawn_blocking(move || {
-        publish_profile_blocking(api_base, admin_token, code, manifest)
+        publish_profile_blocking(app, api_base, admin_token, code, manifest)
     })
     .await
     .map_err(|error| LauncherError::Message(format!("Publish worker failed: {error}")))?
 }
 
 fn publish_profile_blocking(
+    app: AppHandle,
     api_base: String,
     admin_token: String,
     code: String,
@@ -1078,13 +1093,33 @@ fn publish_profile_blocking(
     let client = Client::builder()
         .user_agent("RuuudyMCLauncher/0.1")
         .build()?;
+    emit_publish_progress(&app, "prepare", "Preparing pack files", 0, 2);
+    let mut publish_upload_total = 0;
     let (publish_manifest, uploaded_files) = upload_unrepresented_managed_files(
         &client,
         &api_base,
         admin_token.trim(),
         &code,
         manifest,
+        |current, total, relative_path| {
+            publish_upload_total = total;
+            emit_publish_progress(
+                &app,
+                "upload",
+                &format!("Uploading {relative_path}"),
+                current,
+                total + 2,
+            );
+        },
     )?;
+    let total_steps = publish_upload_total + 2;
+    emit_publish_progress(
+        &app,
+        "manifest",
+        "Saving published manifest",
+        total_steps - 1,
+        total_steps,
+    );
     client
         .put(format!("{api_base}/api/admin/packs/{code}"))
         .bearer_auth(admin_token.trim())
@@ -1092,6 +1127,7 @@ fn publish_profile_blocking(
         .send()?
         .error_for_status()?;
     save_published_manifest(&code, &publish_manifest)?;
+    emit_publish_progress(&app, "complete", "Pack published", total_steps, total_steps);
 
     Ok(PublishSummary {
         code: code.clone(),
@@ -2079,6 +2115,7 @@ fn upload_unrepresented_managed_files(
     admin_token: &str,
     code: &str,
     manifest: PackManifest,
+    mut on_upload: impl FnMut(usize, usize, &str),
 ) -> LauncherResult<(PackManifest, usize)> {
     let profile_dir = profile_dir(&manifest)?;
     let Some(state) = read_install_state(&profile_dir)? else {
@@ -2091,11 +2128,15 @@ fn upload_unrepresented_managed_files(
         .overrides
         .retain(|override_file| is_managed_override_file(&override_file.path));
 
+    let upload_total = count_publish_uploads(&profile_dir, &publish_manifest, &state)?;
+
     if publish_manifest
         .default_options
         .as_ref()
         .is_some_and(|options| options.url.starts_with(LOCAL_PENDING_URL_PREFIX))
     {
+        uploaded_files += 1;
+        on_upload(uploaded_files, upload_total, "options.txt");
         let (url, sha256, size) = upload_profile_file(
             client,
             api_base,
@@ -2111,7 +2152,6 @@ fn upload_unrepresented_managed_files(
             size,
             side: None,
         });
-        uploaded_files += 1;
     }
 
     for override_file in publish_manifest.overrides.iter_mut() {
@@ -2120,6 +2160,8 @@ fn upload_unrepresented_managed_files(
         }
 
         let relative_path = override_file.path.replace('\\', "/");
+        uploaded_files += 1;
+        on_upload(uploaded_files, upload_total, &relative_path);
         let (url, sha256, size) = upload_profile_file(
             client,
             api_base,
@@ -2131,7 +2173,6 @@ fn upload_unrepresented_managed_files(
         override_file.url = url;
         override_file.sha256 = sha256;
         override_file.size = size;
-        uploaded_files += 1;
     }
 
     let mut represented: BTreeSet<String> = publish_manifest
@@ -2162,6 +2203,8 @@ fn upload_unrepresented_managed_files(
             continue;
         }
 
+        uploaded_files += 1;
+        on_upload(uploaded_files, upload_total, &relative_path);
         let (url, sha256, size) = upload_profile_file(
             client,
             api_base,
@@ -2178,7 +2221,6 @@ fn upload_unrepresented_managed_files(
             side: None,
         });
         represented.insert(relative_path);
-        uploaded_files += 1;
     }
 
     if uploaded_files > 0 {
@@ -2186,6 +2228,55 @@ fn upload_unrepresented_managed_files(
     }
 
     Ok((publish_manifest, uploaded_files))
+}
+
+fn count_publish_uploads(
+    profile_dir: &Path,
+    manifest: &PackManifest,
+    state: &LocalInstallState,
+) -> LauncherResult<usize> {
+    let mut count = 0;
+    if manifest
+        .default_options
+        .as_ref()
+        .is_some_and(|options| options.url.starts_with(LOCAL_PENDING_URL_PREFIX))
+    {
+        count += 1;
+    }
+
+    count += manifest
+        .overrides
+        .iter()
+        .filter(|override_file| override_file.url.starts_with(LOCAL_PENDING_URL_PREFIX))
+        .count();
+
+    let mut represented: BTreeSet<String> = manifest
+        .files
+        .iter()
+        .map(manifest_file_relative_path)
+        .collect();
+    represented.extend(
+        manifest
+            .overrides
+            .iter()
+            .map(|override_file| override_file.path.replace('\\', "/")),
+    );
+
+    for relative_path in &state.managed_files {
+        let relative_path = relative_path.replace('\\', "/");
+        if represented.contains(&relative_path) || !is_managed_override_file(&relative_path) {
+            continue;
+        }
+        if profile_dir
+            .join(safe_relative_path(&relative_path)?)
+            .is_file()
+        {
+            count += 1;
+            represented.insert(relative_path);
+        }
+    }
+
+    Ok(count)
 }
 
 fn upload_profile_file(
@@ -2292,10 +2383,7 @@ fn download_and_verify(
 }
 
 fn verify_hash(bytes: &[u8], item: &DownloadItem) -> LauncherResult<()> {
-    let actual = match item.hash_algorithm {
-        HashAlgorithm::Sha256 => hex::encode(Sha256::digest(bytes)),
-        HashAlgorithm::Sha512 => hex::encode(Sha512::digest(bytes)),
-    };
+    let actual = hash_bytes(bytes, &item.hash_algorithm);
     if actual.eq_ignore_ascii_case(&item.hash) {
         Ok(())
     } else {
@@ -2304,6 +2392,116 @@ fn verify_hash(bytes: &[u8], item: &DownloadItem) -> LauncherResult<()> {
             item.filename
         )))
     }
+}
+
+fn hash_bytes(bytes: &[u8], algorithm: &HashAlgorithm) -> String {
+    match algorithm {
+        HashAlgorithm::Sha256 => hex::encode(Sha256::digest(bytes)),
+        HashAlgorithm::Sha512 => hex::encode(Sha512::digest(bytes)),
+    }
+}
+
+fn managed_text_file_matches_after_newline_normalization(
+    target: &Path,
+    item: &DownloadItem,
+) -> LauncherResult<bool> {
+    if !matches!(item.source, DownloadSource::Override)
+        || !is_text_managed_config_path(&item.relative_path)
+        || fs::metadata(target)?.len() > MAX_NEWLINE_NORMALIZATION_BYTES
+    {
+        return Ok(false);
+    }
+
+    let bytes = fs::read(target)?;
+    if bytes_contains_nul(&bytes) || !bytes_have_newline(&bytes) {
+        return Ok(false);
+    }
+
+    let lf_bytes = normalize_newlines_to_lf(&bytes);
+    if hash_bytes(&lf_bytes, &item.hash_algorithm).eq_ignore_ascii_case(&item.hash) {
+        return Ok(true);
+    }
+
+    let crlf_bytes = line_feed_bytes_to(&lf_bytes, b"\r\n");
+    if hash_bytes(&crlf_bytes, &item.hash_algorithm).eq_ignore_ascii_case(&item.hash) {
+        return Ok(true);
+    }
+
+    let cr_bytes = line_feed_bytes_to(&lf_bytes, b"\r");
+    Ok(hash_bytes(&cr_bytes, &item.hash_algorithm).eq_ignore_ascii_case(&item.hash))
+}
+
+fn is_text_managed_config_path(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
+    let Some(extension) = Path::new(&normalized)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    else {
+        return false;
+    };
+
+    matches!(
+        extension,
+        "cfg"
+            | "conf"
+            | "csv"
+            | "hocon"
+            | "ini"
+            | "json"
+            | "json5"
+            | "js"
+            | "kts"
+            | "lang"
+            | "mcmeta"
+            | "md"
+            | "mjs"
+            | "properties"
+            | "toml"
+            | "ts"
+            | "txt"
+            | "yaml"
+            | "yml"
+    )
+}
+
+fn bytes_contains_nul(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| *byte == 0)
+}
+
+fn bytes_have_newline(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| matches!(*byte, b'\n' | b'\r'))
+}
+
+fn normalize_newlines_to_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                normalized.push(b'\n');
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            byte => normalized.push(byte),
+        }
+        index += 1;
+    }
+    normalized
+}
+
+fn line_feed_bytes_to(bytes: &[u8], newline: &[u8]) -> Vec<u8> {
+    let newline_count = bytes.iter().filter(|byte| **byte == b'\n').count();
+    let extra_bytes = newline.len().saturating_sub(1) * newline_count;
+    let mut converted = Vec::with_capacity(bytes.len() + extra_bytes);
+    for byte in bytes {
+        if *byte == b'\n' {
+            converted.extend_from_slice(newline);
+        } else {
+            converted.push(*byte);
+        }
+    }
+    converted
 }
 
 fn remove_managed_file(profile_dir: &Path, relative_path: &str) -> LauncherResult<()> {
@@ -2761,7 +2959,7 @@ fn upsert_registry_profile(profile: RegistryProfile) -> LauncherResult<()> {
     let mut registry = read_registry()?;
     registry
         .profiles
-        .retain(|existing| existing.code != profile.code);
+        .retain(|existing| existing.code != profile.code && existing.pack_id != profile.pack_id);
     registry.profiles.push(profile);
     write_registry(&registry)
 }
@@ -2888,6 +3086,24 @@ fn emit_progress(app: &AppHandle, stage: &str, message: &str, current: usize, to
     let _ = app.emit(
         "install-progress",
         ProgressEvent {
+            stage: stage.to_string(),
+            message: message.to_string(),
+            current,
+            total,
+        },
+    );
+}
+
+fn emit_publish_progress(
+    app: &AppHandle,
+    stage: &str,
+    message: &str,
+    current: usize,
+    total: usize,
+) {
+    let _ = app.emit(
+        "publish-progress",
+        PublishProgressEvent {
             stage: stage.to_string(),
             message: message.to_string(),
             current,
@@ -3071,7 +3287,6 @@ fn mod_distribution_side(filename: &str) -> String {
         "chat-heads",
         "chatheads",
         "fallingleaves",
-        "prism",
         "legendarytooltips",
         "colorwheel",
         "continuity",
@@ -3504,6 +3719,7 @@ fn is_managed_override_file(relative_path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn slugifies_imported_pack_names() {
@@ -3705,7 +3921,6 @@ mod tests {
     #[test]
     fn curseforge_client_only_mods_stay_out_of_server_manifests() {
         for filename in [
-            "Prism-1.20.1-forge-1.0.5.jar",
             "jeiintegration_1.20.1-10.0.0.jar",
             "LegendaryTooltips-1.20.1-forge-1.4.5.jar",
             "colorwheel-forge-1.2.0+mc1.20.1.jar",
@@ -3732,6 +3947,7 @@ mod tests {
             "jei-1.20.1-forge-15.20.0.129.jar",
             "JustEnoughAdvancements-1.20.1-5.0.1.jar",
             "Camerapture-1.10.8+mc1.20.1-forge.jar",
+            "Prism-1.20.1-forge-1.0.5.jar",
         ] {
             assert_eq!(mod_distribution_side(filename), "both");
         }
@@ -3764,7 +3980,10 @@ mod tests {
             Some("client".to_string())
         );
         assert_eq!(override_side_for_path("config/forge.toml"), None);
-        assert_eq!(override_side_for_path("kubejs/startup_scripts/server.js"), None);
+        assert_eq!(
+            override_side_for_path("kubejs/startup_scripts/server.js"),
+            None
+        );
     }
 
     #[test]
@@ -3946,6 +4165,131 @@ mod tests {
         assert!(!is_managed_override_file("saves/Test World/level.dat"));
         assert!(!is_managed_override_file("logs/latest.log"));
         assert!(!is_managed_override_file("../outside.txt"));
+    }
+
+    #[test]
+    fn pack_health_accepts_text_config_newline_only_size_drift() {
+        let health = pack_health_for_text_config(
+            b"enableThing=true\nmode=client\n",
+            b"enableThing=true\r\nmode=client\r\n",
+        );
+
+        assert!(health.ok);
+        assert_eq!(health.recommended_action, "play");
+        assert_eq!(health.size_mismatches, 0);
+        assert!(health
+            .issues
+            .iter()
+            .all(|issue| issue.title != "Managed file size changed"));
+    }
+
+    #[test]
+    fn pack_health_reports_real_text_config_content_size_drift() {
+        let health = pack_health_for_text_config(
+            b"enableThing=true\nmode=client\n",
+            b"enableThing=false\r\nmode=client\r\n",
+        );
+
+        assert!(!health.ok);
+        assert_eq!(health.recommended_action, "repair");
+        assert_eq!(health.size_mismatches, 1);
+        assert!(health
+            .issues
+            .iter()
+            .any(|issue| issue.title == "Managed file size changed"));
+    }
+
+    fn pack_health_for_text_config(expected: &[u8], actual: &[u8]) -> PackHealthSummary {
+        let _appdata_lock = appdata_test_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-health-newline-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &root);
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "newline-health".to_string(),
+            pack_name: "Newline Health".to_string(),
+            version: "manual-1".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: Loader {
+                loader_type: "fabric".to_string(),
+                version: "0.19.2".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25565,
+            },
+            files: Vec::new(),
+            overrides: vec![ManifestOverride {
+                path: "config/example.properties".to_string(),
+                url: "https://launcher.ruuudy.in/api/packs/NEWLINE/files/config/example.properties"
+                    .to_string(),
+                sha256: hex::encode(Sha256::digest(expected)),
+                size: expected.len() as u64,
+                side: None,
+            }],
+            default_options: None,
+            server_pack: None,
+        };
+        let profile_dir = profile_dir(&manifest).unwrap();
+        fs::create_dir_all(profile_dir.join("config")).unwrap();
+        fs::write(profile_dir.join("config/example.properties"), actual).unwrap();
+        write_install_state(
+            &profile_dir,
+            &LocalInstallState {
+                pack_id: manifest.pack_id.clone(),
+                manifest_version: manifest.version.clone(),
+                managed_files: build_install_plan(&manifest, None).next_managed_files,
+            },
+        )
+        .unwrap();
+
+        let version_id = loader_version_id(
+            &manifest.loader.loader_type,
+            &manifest.loader.version,
+            &manifest.minecraft_version,
+        )
+        .unwrap();
+        let version_dir = root.join(".minecraft/versions").join(&version_id);
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(version_dir.join(format!("{version_id}.json")), "{}").unwrap();
+        let profile_id = minecraft_profile_id(&manifest);
+        fs::create_dir_all(root.join(".minecraft")).unwrap();
+        fs::write(
+            root.join(".minecraft/launcher_profiles.json"),
+            serde_json::json!({
+                "profiles": {
+                    profile_id: {
+                        "lastVersionId": version_id,
+                        "gameDir": profile_dir.to_string_lossy(),
+                        "javaArgs": default_client_java_args()
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let health = get_pack_health_blocking(manifest).unwrap();
+
+        if let Some(appdata) = previous_appdata {
+            std::env::set_var("APPDATA", appdata);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
+        let _ = fs::remove_dir_all(root);
+        health
+    }
+
+    fn appdata_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     #[test]
@@ -4274,6 +4618,59 @@ mod tests {
         assert!(!status.installed);
         assert_eq!(status.installed_version.as_deref(), Some("manual-old"));
         assert_eq!(status.latest_version, "manual-new");
+
+        if let Some(appdata) = previous_appdata {
+            std::env::set_var("APPDATA", appdata);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_same_pack_under_new_code_replaces_old_sidebar_entry() {
+        let _appdata_lock = appdata_test_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "ruuudy-launcher-save-code-rename-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_appdata = std::env::var("APPDATA").ok();
+        std::env::set_var("APPDATA", &root);
+
+        let manifest = PackManifest {
+            schema_version: 1,
+            pack_id: "the-casket-of-reveries".to_string(),
+            pack_name: "The Casket of Reveries".to_string(),
+            version: "manual-new".to_string(),
+            minecraft_version: "1.20.1".to_string(),
+            loader: Loader {
+                loader_type: "forge".to_string(),
+                version: "47.4.0".to_string(),
+            },
+            server: Server {
+                address: "mc.ruuudy.in".to_string(),
+                port: 25567,
+            },
+            files: Vec::new(),
+            overrides: Vec::new(),
+            default_options: None,
+            server_pack: None,
+        };
+
+        save_profile_manifest("THE-CASKET-OF-REVERIES".to_string(), manifest.clone()).unwrap();
+        save_profile_manifest("BOOB".to_string(), manifest.clone()).unwrap();
+
+        let profiles = list_profiles().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].code, "BOOB");
+        assert_eq!(profiles[0].pack_id, manifest.pack_id);
+        assert!(read_local_manifest_by_code("THE-CASKET-OF-REVERIES")
+            .unwrap()
+            .is_none());
+        assert!(read_local_manifest_by_code("BOOB").unwrap().is_some());
 
         if let Some(appdata) = previous_appdata {
             std::env::set_var("APPDATA", appdata);

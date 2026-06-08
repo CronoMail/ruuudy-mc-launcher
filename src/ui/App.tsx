@@ -190,6 +190,8 @@ export function App() {
   const [importPreview, setImportPreview] = useState<CurseForgeZipPreview | null>(null);
   const [pendingImportPath, setPendingImportPath] = useState<string | null>(null);
   const [publishSummary, setPublishSummary] = useState<PublishSummary | null>(null);
+  const [publishProgress, setPublishProgress] = useState<ProgressEvent | null>(null);
+  const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewState>("lookup");
   const [activeTab, setActiveTab] = useState<ProfileTab>("overview");
@@ -204,6 +206,15 @@ export function App() {
   useEffect(() => {
     const unlisten = listen<ProgressEvent>("install-progress", (event) => {
       setProgress(event.payload);
+    });
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<ProgressEvent>("publish-progress", (event) => {
+      setPublishProgress(event.payload);
     });
     return () => {
       void unlisten.then((dispose) => dispose());
@@ -241,6 +252,11 @@ export function App() {
     return Math.round((progress.current / progress.total) * 100);
   }, [progress]);
 
+  const publishProgressPercent = useMemo(() => {
+    if (!publishProgress || publishProgress.total === 0) return 0;
+    return Math.min(100, Math.round((publishProgress.current / publishProgress.total) * 100));
+  }, [publishProgress]);
+
   const managedMods = useMemo<ManagedMod[]>(() => {
     if (!manifest) return [];
     return [
@@ -268,6 +284,7 @@ export function App() {
     setSummary(null);
     setImportSummary(null);
     setPublishSummary(null);
+    setPublishProgress(null);
     setModNotice(null);
     setProgress(null);
     try {
@@ -294,6 +311,7 @@ export function App() {
     setSummary(null);
     setImportSummary(null);
     setPublishSummary(null);
+    setPublishProgress(null);
     setModNotice(null);
     setProgress(null);
     try {
@@ -554,9 +572,11 @@ export function App() {
   }
 
   async function publishCurrentProfile() {
-    if (!manifest) return;
+    if (!manifest || publishing) return;
     setError(null);
     setPublishSummary(null);
+    setPublishProgress({ stage: "sync", message: "Checking local folder changes", current: 0, total: 3 });
+    setPublishing(true);
     try {
       const folderSync = await invoke<FolderSyncSummary>("sync_manifest_with_profile_folder", {
         code,
@@ -568,6 +588,7 @@ export function App() {
           `Removed missing local files from the shared pack: ${folderSync.removedFiles.join(", ")}.`
         );
       }
+      setPublishProgress({ stage: "sync", message: "Local folder synced", current: 1, total: 3 });
       const result = await invoke<PublishSummary>("publish_profile", {
         apiBase,
         adminToken,
@@ -575,10 +596,14 @@ export function App() {
         manifest: folderSync.manifest
       });
       setPublishSummary(result);
+      setPublishProgress({ stage: "complete", message: "Pack published", current: 3, total: 3 });
       await loadManifest(code.trim().toUpperCase(), result.manifest);
       await refreshProfiles();
     } catch (err) {
       setError(String(err));
+      setPublishProgress(null);
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -1267,13 +1292,24 @@ export function App() {
                       placeholder="MY-PACK"
                     />
                   </label>
-                  <button className="secondary-button" onClick={() => void saveProfile(manifest)}>
+                  <button className="secondary-button" onClick={() => void saveProfile(manifest)} disabled={publishing}>
                     Save Code
                   </button>
-                  <button className="publish-button" onClick={publishCurrentProfile}>
+                  <button className="publish-button" onClick={publishCurrentProfile} disabled={publishing}>
                     <Send size={18} />
-                    Publish
+                    {publishing ? "Publishing" : "Publish"}
                   </button>
+                  {(publishing || publishProgress) && (
+                    <div className="publish-progress">
+                      <div className="publish-progress-header">
+                        <span>{publishProgress?.message ?? "Publishing..."}</span>
+                        <strong>{publishProgressPercent}%</strong>
+                      </div>
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${publishProgressPercent}%` }} />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="actions">
                   <button className="primary-button" onClick={() => void runPrimaryPackAction()} disabled={view === "working"}>
