@@ -518,6 +518,9 @@ fn get_pack_health_blocking(manifest: PackManifest) -> LauncherResult<PackHealth
         if let Some(expected_size) = item.size {
             let actual_size = fs::metadata(&target)?.len();
             if actual_size != expected_size {
+                if is_user_mutable_managed_path(&item.relative_path) {
+                    continue;
+                }
                 if managed_text_file_matches_after_newline_normalization(&target, &item)? {
                     continue;
                 }
@@ -2431,6 +2434,13 @@ fn managed_text_file_matches_after_newline_normalization(
     Ok(hash_bytes(&cr_bytes, &item.hash_algorithm).eq_ignore_ascii_case(&item.hash))
 }
 
+fn is_user_mutable_managed_path(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("config/")
+        || normalized == "options.txt"
+        || normalized.starts_with("options") && normalized.ends_with(".txt")
+}
+
 fn is_text_managed_config_path(relative_path: &str) -> bool {
     let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
     let Some(extension) = Path::new(&normalized)
@@ -4185,7 +4195,8 @@ mod tests {
 
     #[test]
     fn pack_health_reports_real_text_config_content_size_drift() {
-        let health = pack_health_for_text_config(
+        let health = pack_health_for_text_config_at(
+            "defaultconfigs/example.properties",
             b"enableThing=true\nmode=client\n",
             b"enableThing=false\r\nmode=client\r\n",
         );
@@ -4199,7 +4210,38 @@ mod tests {
             .any(|issue| issue.title == "Managed file size changed"));
     }
 
+    #[test]
+    fn pack_health_accepts_user_modified_client_preferences() {
+        for relative_path in [
+            "options.txt",
+            "config/ares_hud-client.toml",
+            "config/chloride-client.json",
+            "config/oculus.properties",
+            "config/beyonddimensions-common.toml",
+        ] {
+            let health = pack_health_for_text_config_at(
+                relative_path,
+                b"enabled=true\nmode=pack-default\n",
+                b"enabled=false\nmode=player-choice\nextra=true\n",
+            );
+
+            assert!(
+                health.ok,
+                "{relative_path} should allow local in-game preference changes"
+            );
+            assert_eq!(health.size_mismatches, 0, "{relative_path}");
+        }
+    }
+
     fn pack_health_for_text_config(expected: &[u8], actual: &[u8]) -> PackHealthSummary {
+        pack_health_for_text_config_at("config/example.properties", expected, actual)
+    }
+
+    fn pack_health_for_text_config_at(
+        relative_path: &str,
+        expected: &[u8],
+        actual: &[u8],
+    ) -> PackHealthSummary {
         let _appdata_lock = appdata_test_lock().lock().unwrap();
         let root = std::env::temp_dir().join(format!(
             "ruuudy-launcher-health-newline-test-{}",
@@ -4227,9 +4269,8 @@ mod tests {
             },
             files: Vec::new(),
             overrides: vec![ManifestOverride {
-                path: "config/example.properties".to_string(),
-                url: "https://launcher.ruuudy.in/api/packs/NEWLINE/files/config/example.properties"
-                    .to_string(),
+                path: relative_path.to_string(),
+                url: format!("https://launcher.ruuudy.in/api/packs/NEWLINE/files/{relative_path}"),
                 sha256: hex::encode(Sha256::digest(expected)),
                 size: expected.len() as u64,
                 side: None,
@@ -4238,8 +4279,9 @@ mod tests {
             server_pack: None,
         };
         let profile_dir = profile_dir(&manifest).unwrap();
-        fs::create_dir_all(profile_dir.join("config")).unwrap();
-        fs::write(profile_dir.join("config/example.properties"), actual).unwrap();
+        let target = profile_dir.join(relative_path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, actual).unwrap();
         write_install_state(
             &profile_dir,
             &LocalInstallState {
