@@ -2437,6 +2437,7 @@ fn managed_text_file_matches_after_newline_normalization(
 fn is_user_mutable_managed_path(relative_path: &str) -> bool {
     let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
     normalized.starts_with("config/")
+        || normalized.starts_with("local/")
         || normalized == "options.txt"
         || normalized.starts_with("options") && normalized.ends_with(".txt")
 }
@@ -4218,6 +4219,7 @@ mod tests {
             "config/chloride-client.json",
             "config/oculus.properties",
             "config/beyonddimensions-common.toml",
+            "local/certain_questing_additions/client-config.snbt",
         ] {
             let health = pack_health_for_text_config_at(
                 relative_path,
